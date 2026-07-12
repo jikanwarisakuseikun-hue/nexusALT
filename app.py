@@ -2,11 +2,27 @@ import streamlit as st
 import json
 import base64
 import time
+import sys
+
+# 🌟 Python 3.14環境における st_audiorec のパス問題を自動検知して強制解決
+try:
+    import st_audiorec
+except ModuleNotFoundError:
+    for path in sys.path:
+        if "site-packages" in path:
+            sys.path.append(f"{path}/st_audiorec")
+    try:
+        from st_audiorec import st_audiorec
+    except ImportError:
+        # 万が一のフォールバック用（空の関数を定義してクラッシュを防止）
+        def st_audiorec():
+            st.error("録音コンポーネントの初期化に失敗しました。管理画面からRebootを行ってください。")
+            return None
+
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 import google.generativeai as genai
-from streamlit_audiorec import st_audiorec
 
 # 📄 ページ設定とデザインの適用
 st.set_page_config(
@@ -148,8 +164,12 @@ elif st.session_state.step == "test":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("##### 🎙️ 回答を録音する")
     
-    # 高性能インライン録音コンポーネント
-    wav_audio_data = st_audiorec()
+    # パス問題を自動解決した安全なコンポーネントの呼び出し
+    try:
+        wav_audio_data = st_audiorec()
+    except Exception as e:
+        wav_audio_data = None
+        st.error("録音コンポーネントの読み込み中にエラーが発生しました。")
     
     if wav_audio_data is not None:
         st.session_state.recorded_audios[q["id"]] = wav_audio_data
