@@ -6,7 +6,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 import google.generativeai as genai
-from st_audiorec import st_audiorec
+from streamlit_audiorec import st_audiorec
 
 # 📄 ページ設定とデザインの適用
 st.set_page_config(
@@ -16,16 +16,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 🎨 スタイリッシュで教育現場に馴染むモダンデザインCSS
+# 🎨 教育現場に馴染むスタイリッシュなモダンデザインCSS
 st.markdown("""
     <style>
-    /* 全体背景とフォントの最適化 */
     .stApp {
         background-color: #f8fafc;
         color: #1e293b;
         font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif;
     }
-    /* ヘッダーデザイン */
     .main-header {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         padding: 24px;
@@ -46,7 +44,6 @@ st.markdown("""
         font-size: 13px !important;
         margin: 4px 0 0 0 !important;
     }
-    /* カード風セクション */
     .test-card {
         background-color: white;
         padding: 30px;
@@ -55,7 +52,6 @@ st.markdown("""
         box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
         margin-bottom: 20px;
     }
-    /* 聴き取り問題専用の表示ボックス */
     .audio-box {
         background-color: #f1f5f9;
         border: 1px solid #cbd5e1;
@@ -67,7 +63,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 Streamlitの「隠し金庫(Secrets)」から各鍵を安全に読み込み
+# 🔒 Streamlitの「Secrets」から各鍵を安全に読み込み
 try:
     google_secrets = st.secrets["GOOGLE_SERVICE_ACCOUNT"]
     service_account_info = json.loads(google_secrets)
@@ -75,7 +71,7 @@ try:
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
     FOLDER_ID = st.secrets["FOLDER_ID"]
 except Exception as e:
-    st.error("【設定エラー】StreamlitのSecrets設定が不足しているか正しくありません。クラウド設定を確認してください。")
+    st.error("【設定エラー】StreamlitのSecrets設定が不足しているか正しくありません。")
     st.stop()
 
 # 🌐 APIの初期化
@@ -99,7 +95,7 @@ QUESTIONS = [
 
 # 💾 セッション状態（一時データ保持）の初期化
 if "step" not in st.session_state:
-    st.session_state.step = "init"  # init -> test -> finish
+    st.session_state.step = "init"
 if "current_q_idx" not in st.session_state:
     st.session_state.current_q_idx = 0
 if "student_info" not in st.session_state:
@@ -110,7 +106,6 @@ if "recorded_audios" not in st.session_state:
 # --- 🖼️ 画面1: プロフィール初期入力画面 ---
 if st.session_state.step == "init":
     st.markdown('<div class="main-header"><h1>🎙️ Nexus ALT スピーキングテスト</h1><p>Digital Speaking Assessment System</p></div>', unsafe_allow_html=True)
-    
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     st.subheader("受験者情報の入力")
     st.info("クラス、出席番号、氏名を正しく選択・入力してください。")
@@ -133,7 +128,7 @@ if st.session_state.step == "init":
             st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 🖼️ 画面2: テスト本番画面（マイクエラーなしのインライン録音） ---
+# --- 🖼️ 画面2: テスト本番画面 ---
 elif st.session_state.step == "test":
     info = st.session_state.student_info
     st.markdown(f'<div class="main-header"><h1>Question {st.session_state.current_q_idx + 1} / {len(QUESTIONS)}</h1><p>{info["class"]} {info["number"]} {info["name"]} 受験中</p></div>', unsafe_allow_html=True)
@@ -143,7 +138,7 @@ elif st.session_state.step == "test":
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     st.markdown("##### 🔊 質問の音声をよく聴いて、下のマイクボタンを押して英語で答えてください。")
     
-    # 🎧 質問音声を再生（問題文は画面に表示しない設定）
+    # 🎧 質問音声を自動生成再生
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
     tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={q['text'].replace(' ', '+')}"
     st.audio(tts_url, format="audio/mp3")
@@ -153,7 +148,7 @@ elif st.session_state.step == "test":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("##### 🎙️ 回答を録音する")
     
-    # 🌟 st_audiorec：iframeの制限を突破して確実にブラウザ内のマイク権限を掴み取る特殊コンポーネント
+    # 高性能インライン録音コンポーネント
     wav_audio_data = st_audiorec()
     
     if wav_audio_data is not None:
@@ -162,7 +157,6 @@ elif st.session_state.step == "test":
         
     st.markdown("<br><br>", unsafe_allow_html=True)
     
-    # ナビゲーションボタン（戻る・次へ）
     c1, c2 = st.columns(2)
     with c1:
         if st.button("⬅️ 前の問題に戻る", use_container_width=True, disabled=(st.session_state.current_q_idx == 0)):
@@ -187,40 +181,29 @@ elif st.session_state.step == "test":
 # --- 🖼️ 画面3: 送信・AI採点・完了画面 ---
 elif st.session_state.step == "finish":
     st.markdown('<div class="main-header"><h1>🏁 テスト送信・AI採点中</h1><p>データを安全に送信し、AI採点を行っています</p></div>', unsafe_allow_html=True)
-    
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     info = st.session_state.student_info
     
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     total_q = len(QUESTIONS)
     
-    # 全問題を順次処理
     for idx, q in enumerate(QUESTIONS):
         status_text.markdown(f"**【処理中】 Question {idx+1} の音声を保存し、AI採点しています...**")
         audio_bytes = st.session_state.recorded_audios[q["id"]]
         
-        # 1. Googleドライブへ音声ファイルをアップロード
+        # 1. Googleドライブへアップロード
         filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
         media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
-        
-        file_metadata = {
-            "name": filename,
-            "parents": [FOLDER_ID]
-        }
+        file_metadata = {"name": filename, "parents": [FOLDER_ID]}
         
         drive_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink"
+            body=file_metadata, media_body=media, fields="id, webViewLink"
         ).execute()
-        
         audio_link = drive_file.get("webViewLink")
         
-        # 2. Geminiによる超高精度の音声文字起こし＆自動採点
+        # 2. Geminiによる音声マルチモーダル採点
         model = genai.GenerativeModel("gemini-2.5-flash")
-        
         prompt = f"""
         You are an expert English ALT (Assistant Language Teacher) at a Japanese school.
         Please evaluate the student's spoken audio response for this question: "{q['text']}"
@@ -235,18 +218,12 @@ elif st.session_state.step == "finish":
         ・発音・流暢さ: (Advice for improvement)
         """
         
-        # 音声バイトデータをそのままAIに流し込むマルチモーダル処理
         response = model.generate_content([
             prompt,
-            {
-                "mime_type": "audio/wav",
-                "data": audio_bytes
-            }
+            {"mime_type": "audio/wav", "data": audio_bytes}
         ])
-        
         ai_output = response.text
         
-        # レポンスから文字起こしとフィードバックを簡易分離
         try:
             parts = ai_output.split("【採点フィードバック】")
             transcription = parts[0].replace("【AI文字起こし】", "").strip()
@@ -255,18 +232,9 @@ elif st.session_state.step == "finish":
             transcription = "認識完了"
             feedback = ai_output
             
-        # 3. Googleスプレッドシートへ結果を書き込み
+        # 3. Googleスプレッドシートへ書き込み
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        row_data = [
-            timestamp,
-            info["class"],
-            info["number"],
-            info["name"],
-            f"Q{q['id']}",
-            transcription,
-            feedback,
-            audio_link
-        ]
+        row_data = [timestamp, info["class"], info["number"], info["name"], f"Q{q['id']}", transcription, feedback, audio_link]
         
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
@@ -275,16 +243,13 @@ elif st.session_state.step == "finish":
             body={"values": [row_data]}
         ).execute()
         
-        # 進捗バーの更新
         progress_bar.progress(int((idx + 1) / total_q * 100))
         
     status_text.empty()
     progress_bar.empty()
     
-    # 🎉 すべての処理が正常終了
     st.balloons()
-    st.success("🎉 スピーキングテストの解答送信とAI採点がすべて完了しました！お疲れ様でした。")
-    st.info("ブラウザを閉じて終了してください。")
+    st.success("🎉 スピーキングテストの解答送信とAI採点がすべて完了しました！")
     
     if st.button("🔄 次の生徒の入力を開始"):
         st.session_state.step = "init"
