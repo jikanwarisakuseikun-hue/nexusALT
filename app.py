@@ -14,7 +14,6 @@ except ModuleNotFoundError:
     try:
         from st_audiorec import st_audiorec
     except ImportError:
-        # 万が一のフォールバック用（空の関数を定義してクラッシュを防止）
         def st_audiorec():
             st.error("録音コンポーネントの初期化に失敗しました。管理画面からRebootを行ってください。")
             return None
@@ -32,7 +31,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 🎨 教育現場に馴染むスタイリッシュなモダンデザインCSS
+# 🎨 スタイリッシュなモダンデザインCSS
 st.markdown("""
     <style>
     .stApp {
@@ -79,15 +78,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 Streamlitの「Secrets」から各鍵を安全に読み込み
+# 🔒 【セキュア設計】Streamlitの「Secrets」から安全にデコードして読み込み
 try:
-    google_secrets = st.secrets["GOOGLE_SERVICE_ACCOUNT"]
-    service_account_info = json.loads(google_secrets)
     gemini_key = st.secrets["GEMINI_API_KEY"]
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
     FOLDER_ID = st.secrets["FOLDER_ID"]
+    
+    # Base64で1行化した文字列を取り出し、安全にJSON辞書へ復元する
+    sa_base64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_BASE64"]
+    service_account_info = json.loads(base64.b64decode(sa_base64).decode("utf-8"))
 except Exception as e:
-    st.error("【設定エラー】StreamlitのSecrets設定が不足しているか正しくありません。")
+    st.error(f"【設定エラー】Secretsの読み込みに失敗しました。設定内容を確認してください。 エラー詳細: {e}")
     st.stop()
 
 # 🌐 APIの初期化
