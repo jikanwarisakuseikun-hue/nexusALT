@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus ALT - スピーキングテスト</title>
+    <!-- Tailwind CSS (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        .fade-in {
+            animation: fadeIn 0.3s ease-in-out forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col select-none">
+
+    <!-- ヘッダー -->
+    <header class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md py-4 px-6">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold tracking-wider flex items-center gap-2">
+                <span>🌐</span> Nexus ALT
+            </h1>
+            <span class="text-xs bg-white/20 px-2.5 py-1 rounded-full backdrop-blur-sm font-medium">
+                学校用デジタルテストシステム
+            </span>
+        </div>
+    </header>
+
+    <!-- メメインコンテンツ -->
+    <main class="flex-grow max-w-2xl w-full mx-auto px-4 py-8 flex flex-col justify-center">
+        
+        <!-- 🚨 全体ローディング・グレーアウト（多重操作防止・ランダムウェイト可視化用） -->
+        <div id="loadingOverlay" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white hidden">
+            <div id="loadingSpinner" class="animate-spin rounded-full h-14 w-14 border-4 border-white border-t-transparent mb-4"></div>
+            <p id="loadingMessage" class="text-lg font-medium tracking-wide text-center px-6">通信中...</p>
+            <!-- スパイク対策待機用のプログレス表示 -->
+            <div id="waitBarContainer" class="w-64 bg-white/20 h-2 rounded-full mt-4 overflow-hidden hidden">
+                <div id="waitBar" class="bg-emerald-400 h-full w-0 transition-all duration-300 ease-out"></div>
+            </div>
+        </div>
+
+        <!-- ==========================================
+             ① プロフィール入力画面（初期状態）
+             ========================================== -->
+        <section id="screenProfile" class="fade-in bg-white border border-slate-200 shadow-xl rounded-2xl p-6 md:p-8 w-full mx-auto">
+            <div class="text-center mb-6">
+                <h2 class="text-2xl font-bold text-slate-900">受検者登録</h2>
+                <p class="text-sm text-slate-500 mt-1">クラスと名前を入力してテストを始めましょう</p>
+            </div>
+
+            <form id="profileForm" onsubmit="event.preventDefault(); startTest();" class="space-y-5">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">クラス <span class="text-red-500">*</span></label>
+                    <select id="selectClass" required disabled
+                        class="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition disabled:opacity-60">
+                        <option value="" disabled selected>クラスを読み込み中...</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">名簿番号 <span class="text-red-500">*</span></label>
+                    <select id="selectNumber" required
+                        class="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                        <option value="" disabled selected>番号を選択してください</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">氏名 <span class="text-red-500">*</span></label>
+                    <input type="text" id="inputName" required placeholder="例：ヤマダ タロウ（カタカナ推奨）"
+                        class="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition">
+                </div>
+
+                <button type="submit" id="btnStart" disabled
+                    class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg hover:from-blue-700 hover:to-indigo-700 active:scale-[0.98] transition-all disabled:opacity-50 disabled:pointer-events-none mt-4 cursor-pointer">
+                    テストを開始する
+                </button>
+            </form>
+        </section>
+
+        <!-- ==========================================
+             ② テスト受検画面
+             ========================================== -->
+        <section id="screenTest" class="fade-in bg-white border border-slate-200 shadow-xl rounded-2xl p-6 md:p-8 w-full mx-auto hidden">
+            <div class="mb-6">
+                <div class="flex justify-between text-xs text-slate-500 font-semibold mb-2">
+                    <span id="txtProgress">問題 1 / 5</span>
+                    <span id="txtStudentInfo">クラス 番号 氏名</span>
+                </div>
+                <div id="progressBarContainer" class="flex gap-2 h-2.5 w-full"></div>
+            </div>
+
+            <div class="bg-slate-50 border border-slate-100 rounded-2xl p-8 text-center my-8 shadow-inner">
+                <h3 id="lblQuestionId" class="text-3xl font-black text-blue-600 tracking-wider mb-2">Q1</h3>
+                <p class="text-slate-500 text-sm font-medium">ボタンを押して、先生の質問をよく聴こう</p>
+                
+                <div class="mt-6 flex flex-col items-center gap-2">
+                    <button type="button" id="btnListen" onclick="playQuestionSpeech()"
+                        class="flex items-center gap-2 bg-white border-2 border-blue-500 text-blue-600 hover:bg-blue-50 font-bold py-3 px-6 rounded-full shadow-sm transition active:scale-95 cursor-pointer">
+                        🔊 先生の質問をきく
+                    </button>
+                    <span id="lblListenCount" class="text-xs text-slate-400 font-medium">きいた回数: 0回</span>
+                </div>
+            </div>
+
+            <div class="flex flex-col items-center justify-center space-y-4">
+                <button type="button" id="btnRecord" onclick="toggleRecord()" disabled
+                    class="w-24 h-24 bg-red-500 text-white rounded-full flex flex-col items-center justify-center font-bold shadow-lg hover:bg-red-600 active:scale-95 transition-all disabled:bg-slate-300 disabled:pointer-events-none cursor-pointer">
+                    <span id="iconRecord" class="text-2xl mb-1">🎤</span>
+                    <span id="lblRecord">スタート</span>
+                </button>
+                
+                <div class="flex items-center gap-2 h-6 text-sm">
+                    <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-300"></span>
+                    <span id="lblStatus" class="text-slate-500 font-medium">質問を1回以上聴くと録音できます</span>
+                </div>
+
+                <div class="w-full bg-slate-50 rounded-xl p-4 border border-slate-200 mt-4 min-h-[4rem] text-slate-600 text-sm italic">
+                    <span class="text-xs text-slate-400 block not-italic font-bold mb-1">文字起こしプレビュー（AI確認用）:</span>
+                    <p id="txtSpeechPreview" class="break-words">（ここにあなたの話した英語が薄く表示されます）</p>
+                </div>
+
+                <div class="w-full pt-4 flex justify-end">
+                    <button type="button" id="btnNext" onclick="handleNextOrSubmit()" disabled
+                        class="bg-slate-800 text-white font-bold py-3 px-8 rounded-xl shadow-md hover:bg-slate-900 active:scale-[0.97] transition disabled:opacity-30 disabled:pointer-events-none cursor-pointer">
+                        次の問題へ ➔
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==========================================
+             ③ 評価結果表示エリア（最終データ送信後に動的生成）
+             ========================================== -->
+        <section id="screenResult" class="fade-in bg-white border border-slate-200 shadow-xl rounded-2xl p-6 md:p-8 w-full mx-auto hidden">
+            <div class="text-center mb-6 border-b border-slate-100 pb-4">
+                <h2 class="text-2xl font-bold text-slate-900">テスト結果フィードバック</h2>
+                <p class="text-sm text-slate-500 mt-1">AI先生（Gemini）からの評価メッセージです</p>
+            </div>
+
+            <!-- 動的評価カード展開コンテナ -->
+            <div id="resultCardsContainer" class="space-y-6 mb-8"></div>
+
+            <button type="button" onclick="window.location.reload();"
+                class="w-full bg-slate-800 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg hover:bg-slate-900 active:scale-[0.98] transition-all cursor-pointer">
+                すべてのテストを終了する（初期画面へ）
+            </button>
+        </section>
+
+    </main>
+
+    <footer class="text-center py-4 text-xs text-slate-400">
+        &copy; 2026 Nexus ALT. Powered by Google Apps Script & Gemini.
+    </footer>
+
+    <!-- ==========================================
+         システムロジック (JavaScript)
+         ========================================== -->
+    <script>
+        // 🔗 【重要】作成したGASのWebアプリURLをここに正確に貼り付けてください
+        const GAS_API_URL = "https://script.google.com/macros/s/AKfycbxmyz5dxfWaLGgx_F6uGVGya14j7dpeSZAlOx7Z6vclNIAM9QZbOgnhix3W7gXiSU2Jog/exec";
+
+        let studentProfile = { class: "", number: "", name: "" };
+        let questionsData = []; 
+        let currentQuestionIndex = 0; 
+        let answersData = []; // { base64Audio: "...", text: "...", listenCount: X } を保持
+
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let recognition = null;
+        let currentListenCount = 0;
+        let isRecording = false;
+
+        document.addEventListener("DOMContentLoaded", () => {
+            initNumberSelect();
+            fetchClassList();
+            initSpeechRecognition();
+        });
+
+        function initNumberSelect() {
+            const selectNumber = document.getElementById("selectNumber");
+            for (let i = 1; i <= 40; i++) {
+                const opt = document.createElement("option");
+                opt.value = i; opt.textContent = `${i}番`;
+                selectNumber.appendChild(opt);
+            }
+        }
+
+        function showLoading(show, message = "通信中...", isWait = false) {
+            const overlay = document.getElementById("loadingOverlay");
+            const msgEl = document.getElementById("loadingMessage");
+            const barContainer = document.getElementById("waitBarContainer");
+            
+            msgEl.textContent = message;
+            if (show) {
+                overlay.classList.remove("hidden");
+                if (isWait) {
+                    barContainer.classList.remove("hidden");
+                } else {
+                    barContainer.classList.add("hidden");
+                }
+            } else {
+                overlay.classList.add("hidden");
+            }
+        }
+
+        async function fetchClassList() {
+            const selectClass = document.getElementById("selectClass");
+            const btnStart = document.getElementById("btnStart");
+            if (GAS_API_URL === "YOUR_GAS_WEB_APP_URL_HERE") {
+                selectClass.innerHTML = '<option value="" disabled selected>⚠️ GASのURLが未設定です</option>';
+                return;
+            }
+            try {
+                const response = await fetch(`${GAS_API_URL}?getClasses=true`);
+                if (!response.ok) throw new Error();
+                const classes = await response.json();
+                selectClass.innerHTML = '<option value="" disabled selected>クラスを選択してください</option>';
+                classes.forEach(cls => {
+                    const opt = document.createElement("option");
+                    opt.value = cls; opt.textContent = cls;
+                    selectClass.appendChild(opt);
+                });
+                selectClass.disabled = false;
+                btnStart.disabled = false;
+            } catch (e) {
+                selectClass.innerHTML = '<option value="" disabled selected>❌ 通信エラー（再読み込みしてください）</option>';
+            }
+        }
+
+        async function startTest() {
+            const cls = document.getElementById("selectClass").value;
+            const num = document.getElementById("selectNumber").value;
+            const name = document.getElementById("inputName").value.trim();
+
+            if (!cls || !num || !name) return;
+            studentProfile = { class: cls, number: num, name: name };
+            
+            showLoading(true, "問題データをダウンロード中...");
+            try {
+                const response = await fetch(`${GAS_API_URL}?class=${encodeURIComponent(cls)}`);
+                if (!response.ok) throw new Error();
+                questionsData = await response.json();
+                if (!questionsData || questionsData.length === 0) throw new Error();
+
+                document.getElementById("txtStudentInfo").textContent = `${cls} ${num}番 (${name})`;
+                initProgressBar();
+                renderQuestion();
+
+                document.getElementById("screenProfile").classList.add("hidden");
+                document.getElementById("screenTest").classList.remove("hidden");
+            } catch (e) {
+                alert("問題データの取得に失敗しました。Wi-Fi環境を確認するか、先生に設定を確認してもらってください。");
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function initProgressBar() {
+            const container = document.getElementById("progressBarContainer");
+            container.innerHTML = "";
+            for (let i = 0; i < questionsData.length; i++) {
+                const bar = document.createElement("div");
+                bar.id = `pBar-${i}`;
+                bar.className = "flex-grow rounded-full bg-slate-200 transition-all duration-300";
+                container.appendChild(bar);
+            }
+        }
+
+        function renderQuestion() {
+            currentListenCount = 0;
+            audioChunks = [];
+            
+            document.getElementById("lblQuestionId").textContent = `Q${currentQuestionIndex + 1}`;
+            document.getElementById("txtProgress").textContent = `問題 ${currentQuestionIndex + 1} / ${questionsData.length}`;
+            document.getElementById("lblListenCount").textContent = "きいた回数: 0回";
+            document.getElementById("txtSpeechPreview").textContent = "（ここにあなたの話した英語が薄く表示されます）";
+            
+            document.getElementById("btnRecord").disabled = true;
+            document.getElementById("btnNext").disabled = true;
+            document.getElementById("btnNext").textContent = (currentQuestionIndex === questionsData.length - 1) ? "テストを送信する 💾" : "次の問題へ ➔";
+            
+            updateStatus("slate", "質問を1回以上聴くと録音できます");
+
+            for (let i = 0; i < questionsData.length; i++) {
+                const bar = document.getElementById(`pBar-${i}`);
+                if (i < currentQuestionIndex) {
+                    bar.className = "flex-grow rounded-full bg-emerald-500";
+                } else if (i === currentQuestionIndex) {
+                    bar.className = "flex-grow rounded-full bg-blue-500 ring-2 ring-blue-300 animate-pulse";
+                } else {
+                    bar.className = "flex-grow rounded-full bg-slate-200";
+                }
+            }
+        }
+
+        function updateStatus(color, text) {
+            const dot = document.getElementById("statusDot");
+            const lbl = document.getElementById("lblStatus");
+            dot.className = `w-2.5 h-2.5 rounded-full bg-${color}-500 ${color === 'red' ? 'animate-ping' : ''}`;
+            lbl.textContent = text;
+        }
+
+        function playQuestionSpeech() {
+            if (isRecording) return;
+            const currentQuestion = questionsData[currentQuestionIndex];
+            if (!currentQuestion || !currentQuestion.question) return;
+
+            const utterance = new SpeechSynthesisUtterance(currentQuestion.question);
+            utterance.lang = "en-US";
+            utterance.rate = 0.85;
+
+            utterance.onstart = () => { document.getElementById("btnListen").disabled = true; };
+            utterance.onend = () => {
+                document.getElementById("btnListen").disabled = false;
+                currentListenCount++;
+                document.getElementById("lblListenCount").textContent = `きいた回数: ${currentListenCount}回`;
+                
+                if (currentListenCount > 0 && !isRecording) {
+                    document.getElementById("btnRecord").disabled = false;
+                    updateStatus("blue", "マイクボタンを押して録音を始めてください");
+                }
+            };
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function initSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) return;
+            recognition = new SpeechRecognition();
+            recognition.lang = "en-US";
+            recognition.continuous = true;
+            recognition.interimResults = true;
+
+            recognition.onresult = (event) => {
+                let finalTranscript = "";
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
+                }
+                if (finalTranscript) document.getElementById("txtSpeechPreview").textContent = finalTranscript;
+            };
+        }
+
+        async function toggleRecord() {
+            if (!isRecording) {
+                audioChunks = [];
+                document.getElementById("txtSpeechPreview").textContent = "...音声認識を開始中...";
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                    
+                    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+                    mediaRecorder.onstop = async () => {
+                        stream.getTracks().forEach(track => track.stop());
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        
+                        // 一括送信に備え、BlobをBase64文字列にその場で変換してストック
+                        const base64Audio = await blobToBase64(audioBlob);
+                        
+                        answersData[currentQuestionIndex] = {
+                            base64Audio: base64Audio,
+                            text: document.getElementById("txtSpeechPreview").textContent.replace("...音声認識を開始中...", "").trim() || "(No speech recognized)",
+                            listenCount: currentListenCount
+                        };
+
+                        document.getElementById("btnNext").disabled = false;
+                        updateStatus("emerald", "録音完了！次へ進むか、再録音できます");
+                    };
+
+                    mediaRecorder.start();
+                    if (recognition) recognition.start();
+                    isRecording = true;
+                    document.getElementById("iconRecord").textContent = "⏹️";
+                    document.getElementById("lblRecord").textContent = "ストップ";
+                    document.getElementById("btnListen").disabled = true;
+                    updateStatus("red", "録音中... 話し終わったらストップを押してください");
+                } catch (err) {
+                    alert("マイクの使用許可が必要です。");
+                }
+            } else {
+                if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+                if (recognition) recognition.stop();
+                isRecording = false;
+                document.getElementById("iconRecord").textContent = "🎤";
+                document.getElementById("lblRecord").textContent = "リテイク";
+                document.getElementById("btnListen").disabled = false;
+            }
+        }
+
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64String = reader.result.split(',')[1];
+                    resolve(base64String);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        function handleNextOrSubmit() {
+            if (currentQuestionIndex < questionsData.length - 1) {
+                currentQuestionIndex++;
+                renderQuestion();
+            } else {
+                submitAllDataWithRandomWait();
+            }
+        }
+
+        // --- ⚡ 【スパイク対策】ランダム・ウェイトを伴う一括送信処理 ---
+        async function submitAllDataWithRandomWait() {
+            // 画面操作の完全ロック
+            document.getElementById("screenTest").classList.add("pointer-events-none", "opacity-50");
+            
+            // 0秒〜15秒のランダム・ウェイト時間を決定
+            const waitSeconds = Math.floor(Math.random() * 16); 
+            let remaining = waitSeconds;
+
+            showLoading(true, `送信順序を整列しています... (通信開始まで あと ${remaining} 秒)`, true);
+            
+            const waitBar = document.getElementById("waitBar");
+            waitBar.style.width = "0%";
+
+            // タイマーアニメーションループ
+            const timerPromise = new Promise((resolve) => {
+                const interval = setInterval(() => {
+                    remaining--;
+                    if (remaining >= 0) {
+                        const pct = ((waitSeconds - remaining) / waitSeconds) * 100;
+                        waitBar.style.width = `${pct}%`;
+                        document.getElementById("loadingMessage").textContent = `送信順序を整列しています... (通信開始まで あと ${remaining} 秒)`;
+                    } else {
+                        clearInterval(interval);
+                        resolve();
+                    }
+                }, 1000);
+            });
+
+            await timerPromise;
+
+            // 送信処理開始
+            showLoading(true, "全5問の音声とテキストを一括送信してAI解析中...\n(約15〜30秒かかります。このままお待ちください)");
+
+            const payload = {
+                student: studentProfile,
+                answers: answersData
+            };
+
+            try {
+                const response = await fetch(GAS_API_URL, {
+                    method: "POST",
+                    mode: "no-cors", // GASクロスドメイン対策用。正常に受け取っても不透明な応答(opaque)になる場合があるため、後続でResultsを考慮
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                // no-cors の場合はレスポンスの中身を直読できないため、一定時間後に完了画面へ進めるか、GAS側のエラー救済を信頼して結果展開に移行
+                alert("送信が完了しました！結果画面へ移行します。");
+                renderFinalResults(null); 
+
+            } catch (error) {
+                console.error("送信エラー:", error);
+                // ネットワーク断線時等のフォールバック
+                alert("通信中にエラーが発生した可能性がありますが、データ保護のため結果確認画面へ遷移します。先生のスプレッドシートを確認してください。");
+                renderFinalResults(null);
+            } finally {
+                showLoading(false);
+                document.getElementById("screenTest").classList.add("hidden");
+                document.getElementById("screenResult").classList.remove("hidden");
+            }
+        }
+
+        // --- 📊 評価結果と隠されたルーブリックの動的展開表示 ---
+        function renderFinalResults(apiResultJson) {
+            const container = document.getElementById("resultCardsContainer");
+            container.innerHTML = "";
+
+            // apiResultJsonが空（no-corsによる読み取り不可、またはエラー救済時）は画面側でクリーンな仮表示を行う
+            for (let i = 0; i < questionsData.length; i++) {
+                const q = questionsData[i];
+                const a = answersData[i] || { text: "(No data)", listenCount: 0 };
+                
+                // バッジ色の決定ロジック（仮に結果が得られなかった場合は「済」バッジ）
+                let badgeColor = "bg-blue-500";
+                let scoreText = "送信済";
+
+                const card = document.createElement("div");
+                card.className = "border border-slate-200 bg-slate-50/50 rounded-xl p-5 shadow-sm";
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-3">
+                        <h4 class="text-lg font-bold text-slate-900">Question ${i + 1}</h4>
+                        <span class="inline-flex items-center justify-center px-3 py-1 rounded-full text-xs font-bold text-white ${badgeColor}">
+                            ${scoreText}
+                        </span>
+                    </div>
+                    <div class="space-y-2 text-sm">
+                        <p class="text-slate-500"><span class="font-bold text-slate-700">あなたの文字起こし:</span> <span class="italic">"${a.text}"</span></p>
+                        <p class="text-slate-500"><span class="font-bold text-slate-700">質問再生回数:</span> ${a.listenCount}回</p>
+                        
+                        <!-- 振り返り学習用：採点完了後に初めて開示される評価基準（日本語ルーブリック） -->
+                        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                            <span class="text-xs font-bold text-amber-800 block mb-1">💡 この問題の評価基準 (ルーブリック)</span>
+                            <p class="text-amber-900 text-xs">${q.rubric || "設定されていません"}</p>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            }
+        }
+    </script>
+</body>
+</html>
