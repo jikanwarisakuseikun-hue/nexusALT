@@ -102,7 +102,7 @@ sheets_service = build("sheets", "v4", credentials=creds)
 drive_service = build("drive", "v3", credentials=creds)
 genai.configure(api_key=gemini_key)
 
-# 📝 テストの問題マスタ（※ここの文章を変更すれば問題を変えられます）
+# 📝 テストの問題マスタ
 QUESTIONS = [
     {"id": 1, "text": "What did you do last weekend? Please tell me about it in detail."},
     {"id": 2, "text": "Why do you think learning English is important for your future?"},
@@ -154,7 +154,6 @@ elif st.session_state.step == "test":
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     st.markdown("##### 🔊 質問の音声をよく聴いて、下のマイクボタンを押して英語で答えてください。")
     
-    # 🎧 質問音声を自動生成再生
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
     tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={q['text'].replace(' ', '+')}"
     st.audio(tts_url, format="audio/mp3")
@@ -164,7 +163,6 @@ elif st.session_state.step == "test":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("##### 🎙️ 回答を録音する")
     
-    # パス問題を自動解決した安全なコンポーネントの呼び出し
     try:
         wav_audio_data = st_audiorec()
     except Exception as e:
