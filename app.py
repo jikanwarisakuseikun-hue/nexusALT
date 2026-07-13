@@ -30,7 +30,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 🎨 スタイリッシュなモダンデザインCSS
+# 🎨 スタイリッシュなモダンデザインCSS（著作権フッター用スタイルも維持）
 st.markdown("""
     <style>
     .stApp {
@@ -74,6 +74,24 @@ st.markdown("""
         text-align: center;
         margin: 15px 0;
     }
+    /* 📋 著作権表示用フッターのスタイル */
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: #f1f5f9;
+        color: #64748b;
+        text-align: center;
+        padding: 8px 0;
+        font-size: 11px;
+        border-top: 1px solid #e2e8f0;
+        z-index: 100;
+    }
+    /* フッターがメインコンテンツと被らないよう下部に余白を追加 */
+    .main-content-padding {
+        margin-bottom: 60px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -83,14 +101,9 @@ try:
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
     FOLDER_ID = st.secrets["FOLDER_ID"]
     
-    # Secretsから生のテキストとしてJSONを取得
     raw_json_text = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    
-    # 辞書オブジェクトに変換
     service_account_info = json.loads(raw_json_text)
     
-    # 【最重要】TOMLのテキスト処理で「\\n」に化けてしまった改行コードを、
-    # 正しい非エスケープの改行「\n」に強制変換してGoogle認証の失敗を防ぐ
     if "private_key" in service_account_info:
         service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
         
@@ -126,6 +139,9 @@ if "student_info" not in st.session_state:
     st.session_state.student_info = {}
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {q["id"]: None for q in QUESTIONS}
+
+# コンテンツ全体のラッパー（フッターとの被り防止用）
+st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
 # --- 🖼️ 画面1: プロフィール初期入力画面 ---
 if st.session_state.step == "init":
@@ -228,7 +244,7 @@ elif st.session_state.step == "finish":
         ).execute()
         audio_link = drive_file.get("webViewLink")
         
-        # 2. Geminiによる音声マルチモーダル採点
+        # 2. Geminiによる音声採点
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
         You are an expert English ALT (Assistant Language Teacher) at a Japanese school.
@@ -240,7 +256,7 @@ elif st.session_state.step == "finish":
         
         【採点フィードバック】
         ・総合評価: (A / B / C)
-        运行・文法・表現: (Good points or corrections)
+        ・文法・表現: (Good points or corrections)
         ・発音・流暢さ: (Advice for improvement)
         """
         
@@ -258,16 +274,19 @@ elif st.session_state.step == "finish":
             transcription = "認識完了"
             feedback = ai_output
             
-        # 3. Googleスプレッドシートへ書き込み
+        # 3. Googleスプレッドシートへ書き込み（★Resultsシートを明示的に指定）
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         row_data = [timestamp, info["class"], info["number"], info["name"], f"Q{q['id']}", transcription, feedback, audio_link]
         
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range="シート1!A:H",
-            valueInputOption="USER_ENTERED",
-            body={"values": [row_data]}
-        ).execute()
+        try:
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=SPREADSHEET_ID,
+                range="'Results'!A:H",  # 💡 明示的に「Results」シートを指定して書き込み
+                valueInputOption="USER_ENTERED",
+                body={"values": [row_data]}
+            ).execute()
+        except Exception as sheet_err:
+            st.error(f"Resultsシートへのデータ追加時にエラーが発生しました: {sheet_err}")
         
         progress_bar.progress(int((idx + 1) / total_q * 100))
         
@@ -283,3 +302,12 @@ elif st.session_state.step == "finish":
         st.session_state.recorded_audios = {q["id"]: None for q in QUESTIONS}
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True) # メインラッパー閉じ
+
+# 📊 【著作権表示】画面の最下部に常時固定表示
+st.markdown("""
+    <div class="footer">
+        © 2026 Nexus ALT. All Rights Reserved. Digital Speaking Assessment System.
+    </div>
+""", unsafe_allow_html=True)
