@@ -2,20 +2,23 @@ import streamlit as st
 import json
 import time
 import sys
+import os
 
-# 🌟 Python環境における st_audiorec のパス問題を自動検知して強制解決
+# 🌟 st_audiorec の読み込みパス問題を強制解決するロジック
 try:
     import st_audiorec
 except ModuleNotFoundError:
+    # サーバー内のパッケージ配置先を自動検索してパスへ追加
     for path in sys.path:
         if "site-packages" in path:
-            sys.path.append(f"{path}/st_audiorec")
+            potential_path = os.path.join(path, "st_audiorec")
+            if os.path.exists(potential_path) and potential_path not in sys.path:
+                sys.path.append(potential_path)
     try:
         from st_audiorec import st_audiorec
     except ImportError:
-        def st_audiorec():
-            st.error("録音コンポーネントの初期化に失敗しました。管理画面からRebootを行ってください。")
-            return None
+        # 万が一読み込めない場合、標準の録音コンポーネントを代替として配置
+        st_audiorec = None
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -30,7 +33,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 🎨 スタイリッシュなモダンデザインCSS（著作権フッター用スタイルも維持）
+# 🎨 スタイリッシュなモダンデザインCSS
 st.markdown("""
     <style>
     .stApp {
@@ -74,7 +77,6 @@ st.markdown("""
         text-align: center;
         margin: 15px 0;
     }
-    /* 📋 著作権表示用フッターのスタイル */
     .footer {
         position: fixed;
         left: 0;
@@ -88,14 +90,13 @@ st.markdown("""
         border-top: 1px solid #e2e8f0;
         z-index: 100;
     }
-    /* フッターがメインコンテンツと被らないよう下部に余白を追加 */
     .main-content-padding {
         margin-bottom: 60px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 【安全＆コピペ対応設計】そのまま貼り付けられたJSONテキストを安全にパース
+# 🔒 Secretsのパース
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
@@ -130,7 +131,7 @@ QUESTIONS = [
     {"id": 3, "text": "Look at the imaginary situation. If you could travel anywhere in the world right now, where would you go and why?"}
 ]
 
-# 💾 セッション状態（一時データ保持）の初期化
+# 💾 セッション状態の初期化
 if "step" not in st.session_state:
     st.session_state.step = "init"
 if "current_q_idx" not in st.session_state:
@@ -140,15 +141,13 @@ if "student_info" not in st.session_state:
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {q["id"]: None for q in QUESTIONS}
 
-# コンテンツ全体のラッパー（フッターとの被り防止用）
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
-# --- 🖼️ 画面1: プロフィール初期入力画面 ---
+# --- 🖼️ 画面1: 受験者情報入力画面 ---
 if st.session_state.step == "init":
     st.markdown('<div class="main-header"><h1>🎙️ Nexus ALT スピーキングテスト</h1><p>Digital Speaking Assessment System</p></div>', unsafe_allow_html=True)
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     st.subheader("受験者情報の入力")
-    st.info("クラス、出席番号、氏名を正しく選択・入力してください。")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -174,24 +173,30 @@ elif st.session_state.step == "test":
     st.markdown(f'<div class="main-header"><h1>Question {st.session_state.current_q_idx + 1} / {len(QUESTIONS)}</h1><p>{info["class"]} {info["number"]} {info["name"]} 受験中</p></div>', unsafe_allow_html=True)
     
     q = QUESTIONS[st.session_state.current_q_idx]
-    
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
-    st.markdown("##### 🔊 質問の音声をよく聴いて、下のマイクボタンを押して英語で答えてください。")
     
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
     tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={q['text'].replace(' ', '+')}"
     st.audio(tts_url, format="audio/mp3")
-    st.markdown('<p style="color:#64748b; font-size:12px; margin-top:5px;">※問題文は表示されません。上の再生ボタンを押してよく聴いてください。</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#64748b; font-size:12px; margin-top:5px;">※上の再生ボタンを押して質問をよく聴いてください。</p>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("##### 🎙️ 回答を録音する")
     
-    try:
-        wav_audio_data = st_audiorec()
-    except Exception as e:
-        wav_audio_data = None
-        st.error("録音コンポーネントの読み込み中にエラーが発生しました。")
+    # 🛠️ 録音コンポーネントのエラーを2重でガード
+    wav_audio_data = None
+    if st_audiorec is not None:
+        try:
+            wav_audio_data = st_audiorec()
+        except Exception as e:
+            st.warning("カスタム録音モジュールの起動に失敗しました。標準のマイクを使用します。")
+    
+    # 万が一カスタム録音部品が死んでいる場合は、Streamlit標準の録音機能に自動切り替え
+    if wav_audio_data is None:
+        standard_audio = st.audio_input("マイク入力を許可して録音ボタンを押してください", key=f"audio_input_{q['id']}")
+        if standard_audio is not None:
+            wav_audio_data = standard_audio.read()
     
     if wav_audio_data is not None:
         st.session_state.recorded_audios[q["id"]] = wav_audio_data
@@ -274,14 +279,14 @@ elif st.session_state.step == "finish":
             transcription = "認識完了"
             feedback = ai_output
             
-        # 3. Googleスプレッドシートへ書き込み（★Resultsシートを明示的に指定）
+        # 3. Googleスプレッドシートへ書き込み（Resultsシート指定）
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         row_data = [timestamp, info["class"], info["number"], info["name"], f"Q{q['id']}", transcription, feedback, audio_link]
         
         try:
             sheets_service.spreadsheets().values().append(
                 spreadsheetId=SPREADSHEET_ID,
-                range="'Results'!A:H",  # 💡 明示的に「Results」シートを指定して書き込み
+                range="'Results'!A:H",
                 valueInputOption="USER_ENTERED",
                 body={"values": [row_data]}
             ).execute()
@@ -303,9 +308,9 @@ elif st.session_state.step == "finish":
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True) # メインラッパー閉じ
+st.markdown('</div>', unsafe_allow_html=True)
 
-# 📊 【著作権表示】画面の最下部に常時固定表示
+# 📊 著作権表示
 st.markdown("""
     <div class="footer">
         © 2026 Nexus ALT. All Rights Reserved. Digital Speaking Assessment System.
