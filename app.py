@@ -201,20 +201,17 @@ elif st.session_state.step == "test":
     
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
     
-    # 💡 【対策1】Google翻訳URLを廃止し、gTTSを使ってサーバーサイドで100%安全に音声を生成
+    # 💡 【対策1】gTTSを使ってサーバーサイドで100%安全に問題音声を生成
     try:
         if f"audio_bytes_{q['id']}" not in st.session_state:
             tts = gTTS(text=q['text'], lang='en', tld='com')
-            # メモリ上に音声データを一時保存
             import io
             fp = io.BytesIO()
             tts.write_to_fp(fp)
             st.session_state[f"audio_bytes_{q['id']}"] = fp.getvalue()
         
-        # 音声の再生
         st.audio(st.session_state[f"audio_bytes_{q['id']}"], format="audio/mp3")
         
-        # 再生ボタンを生徒が押したと仮定し、この問題の再生ステップに入ったら回数をカウント
         if st.button("🔊 質問を聴いた（回数を記録）", key=f"listen_btn_{q['id']}"):
             st.session_state.listen_counts[q['id']] += 1
             st.success(f"再生回数を記録しました（現在: {st.session_state.listen_counts[q['id']]}回）")
@@ -276,23 +273,26 @@ elif st.session_state.step == "finish":
     status_text = st.empty()
     total_q = len(QUESTIONS)
     
-    # 💡 【対策2】生徒1人分の横に長い行データを格納するリストを初期化
-    # 列定義: クラス, 名簿番号, 氏名
+    # 💡 【対策2】生徒1人分の横に長いデータ行を準備 (クラス, 名簿番号, 氏名)
     row_data = [info["class"], info["number"], info["name"]]
     
     for idx, q in enumerate(QUESTIONS):
         status_text.markdown(f"**【処理中】 Question {idx+1} の音声を保存し、AI採点しています...**")
         audio_bytes = st.session_state.recorded_audios[q["id"]]
         
-        # 1. Googleドライブへアップロード
+        # 1. Googleドライブへアップロード (🚨 エラーガード付き強化版)
         filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
         media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
         file_metadata = {"name": filename, "parents": [FOLDER_ID]}
         
-        drive_file = drive_service.files().create(
-            body=file_metadata, media_body=media, fields="id, webViewLink"
-        ).execute()
-        audio_link = drive_file.get("webViewLink")
+        try:
+            drive_file = drive_service.files().create(
+                body=file_metadata, media_body=media, fields="id, webViewLink"
+            ).execute()
+            audio_link = drive_file.get("webViewLink")
+        except Exception as drive_err:
+            st.error(f"❌ Googleドライブへの音声保存に失敗しました。フォルダID「{FOLDER_ID}」が正しいか、Googleドライブ上の該当フォルダをサービスアカウントのメールアドレスに対して『共有（編集者）』状態にしているか必ず確認してください。 詳細: {drive_err}")
+            st.stop()
         
         # 2. Geminiによる音声採点
         model = genai.GenerativeModel("gemini-2.5-flash")
@@ -321,7 +321,6 @@ elif st.session_state.step == "finish":
         ])
         ai_output = response.text
         
-        # 採点結果のパース（切り分け）
         try:
             transcription = ai_output.split("【AI文字起こし】")[1].split("【総合評価】")[0].strip()
             score = ai_output.split("【総合評価】")[1].split("【アドバイス】")[0].strip()
@@ -331,7 +330,7 @@ elif st.session_state.step == "finish":
             score = "B"
             advice = ai_output
             
-        # 💡 【対策2】1問題ごとに、画像と同じ順番で横にデータを追加（音声, テキスト, 評価, アドバイス, 回数）
+        # 💡 横長のシート構成に追随するよう、各設問データを配列の末尾へ結合していく
         listen_count = st.session_state.listen_counts[q['id']]
         row_data.extend([audio_link, transcription, score, advice, f"{listen_count}回"])
         
@@ -340,16 +339,17 @@ elif st.session_state.step == "finish":
     status_text.empty()
     progress_bar.empty()
     
-    # 💡 【対策2】全問題のデータを「横1列」に連結したものを、一発でResultsシートの最下行へ追記
+    # 💡 【対策2】全設問分の連結データを、もっとも安全な A:A 指定で Results シートの最下行へ一発書き込み
     try:
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range="'Results'!A:Z",
+            range="'Results'!A:A",
             valueInputOption="USER_ENTERED",
             body={"values": [row_data]}
         ).execute()
     except Exception as sheet_err:
         st.error(f"Resultsシートへのデータ保存に失敗しました: {sheet_err}")
+        st.stop()
         
     st.balloons()
     st.success("🎉 スピーキングテストの解答送信とAI採点がすべて完了しました！")
@@ -359,7 +359,6 @@ elif st.session_state.step == "finish":
         st.session_state.current_q_idx = 0
         st.session_state.recorded_audios = {}
         st.session_state.listen_counts = {1: 0, 2: 0, 3: 0}
-        # 各問題の音声キャッシュをクリアして次の生徒へ
         for i in [1, 2, 3]:
             if f"audio_bytes_{i}" in st.session_state:
                 del st.session_state[f"audio_bytes_{i}"]
