@@ -1,10 +1,9 @@
 import streamlit as st
 import json
-import base64
 import time
 import sys
 
-# 🌟 Python 3.14環境における st_audiorec のパス問題を自動検知して強制解決
+# 🌟 Python環境における st_audiorec のパス問題を自動検知して強制解決
 try:
     import st_audiorec
 except ModuleNotFoundError:
@@ -78,17 +77,25 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 【セキュア設計】Streamlitの「Secrets」から安全にデコードして読み込み
+# 🔒 【安全＆コピペ対応設計】そのまま貼り付けられたJSONテキストを安全にパース
 try:
     gemini_key = st.secrets["GEMINI_API_KEY"]
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
     FOLDER_ID = st.secrets["FOLDER_ID"]
     
-    # Base64で1行化した文字列を取り出し、安全にJSON辞書へ復元する
-    sa_base64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_BASE64"]
-    service_account_info = json.loads(base64.b64decode(sa_base64).decode("utf-8"))
+    # Secretsから生のテキストとしてJSONを取得
+    raw_json_text = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    
+    # 辞書オブジェクトに変換
+    service_account_info = json.loads(raw_json_text)
+    
+    # 【最重要】TOMLのテキスト処理で「\\n」に化けてしまった改行コードを、
+    # 正しい非エスケープの改行「\n」に強制変換してGoogle認証の失敗を防ぐ
+    if "private_key" in service_account_info:
+        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
+        
 except Exception as e:
-    st.error(f"【設定エラー】Secretsの読み込みに失敗しました。設定内容を確認してください。 エラー詳細: {e}")
+    st.error(f"【設定エラー】Secretsの読み込みまたはJSONの解析に失敗しました。設定内容を確認してください。 エラー詳細: {e}")
     st.stop()
 
 # 🌐 APIの初期化
@@ -233,7 +240,7 @@ elif st.session_state.step == "finish":
         
         【採点フィードバック】
         ・総合評価: (A / B / C)
-        ・文法・表現: (Good points or corrections)
+        运行・文法・表現: (Good points or corrections)
         ・発音・流暢さ: (Advice for improvement)
         """
         
