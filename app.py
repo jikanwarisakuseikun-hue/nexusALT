@@ -143,7 +143,7 @@ if st.session_state.questions_data is None:
         
         row_values = result.get("values", [])[0]
         
-        # 💡 【対策3】シートに書かれているクラス名（例: A3セル）を取得
+        # シートに書かれているクラス名（例: A3セル）を取得
         st.session_state.class_name = row_values[0] if len(row_values) > 0 else "設定なし"
         
         # 問題データのセット
@@ -164,6 +164,9 @@ if st.session_state.questions_data is None:
 QUESTIONS = st.session_state.questions_data
 FOLDER_ID = st.secrets["FOLDER_ID"]
 
+# 💡 【重要】新しく指定された共有ドライブのルートID（0Aから始まるID）を内部処理用に固定適用
+TARGET_DRIVE_ID = "0ACP5Eu-XLix6Uk9PVA"
+
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
 # --- 🖼️ 画面1: 受験者情報入力画面 ---
@@ -174,7 +177,7 @@ if st.session_state.step == "init":
     
     col1, col2 = st.columns(2)
     with col1:
-        # 💡 【対策3】セレクトボックスにはシートから読み取ったクラス名のみを表示
+        # セレクトボックスにはシートから読み取ったクラス名のみを表示
         cls = st.selectbox("クラス", [st.session_state.class_name])
     with col2:
         num = st.selectbox("名簿番号", [f"{i}番" for i in range(1, 46)])
@@ -201,7 +204,7 @@ elif st.session_state.step == "test":
     
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
     
-    # 💡 【対策1】gTTSを使ってサーバーサイドで100%安全に問題音声を生成
+    # gTTSを使ってサーバーサイドで問題音声を生成
     try:
         if f"audio_bytes_{q['id']}" not in st.session_state:
             tts = gTTS(text=q['text'], lang='en', tld='com')
@@ -273,25 +276,35 @@ elif st.session_state.step == "finish":
     status_text = st.empty()
     total_q = len(QUESTIONS)
     
-    # 💡 【対策2】生徒1人分の横に長いデータ行を準備 (クラス, 名簿番号, 氏名)
+    # 生徒1人分の横に長いデータ行を準備 (クラス, 名簿番号, 氏名)
     row_data = [info["class"], info["number"], info["name"]]
     
     for idx, q in enumerate(QUESTIONS):
         status_text.markdown(f"**【処理中】 Question {idx+1} の音声を保存し、AI採点しています...**")
         audio_bytes = st.session_state.recorded_audios[q["id"]]
         
-        # 1. Googleドライブへアップロード (🚨 エラーガード付き強化版)
+        # 1. Googleドライブへアップロード (🚨 新しい共有ドライブ・ルート直下保存最適化版)
         filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
         media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
-        file_metadata = {"name": filename, "parents": [FOLDER_ID]}
+        
+        # 💡 ルートID（0Aで始まるID）の場合は、通常の子フォルダ保存用の metadata に加え
+        # driveId を明示的に渡すことで、APIが共有ドライブ直下への直接保存を認識できるようになります。
+        file_metadata = {
+            "name": filename, 
+            "parents": [TARGET_DRIVE_ID],
+            "driveId": TARGET_DRIVE_ID
+        }
         
         try:
             drive_file = drive_service.files().create(
-                body=file_metadata, media_body=media, fields="id, webViewLink"
+                body=file_metadata, 
+                media_body=media, 
+                fields="id, webViewLink",
+                supportsAllDrives=True  # 👈 共有ドライブ用の必須セキュリティ解除フラグ
             ).execute()
             audio_link = drive_file.get("webViewLink")
         except Exception as drive_err:
-            st.error(f"❌ Googleドライブへの音声保存に失敗しました。フォルダID「{FOLDER_ID}」が正しいか、Googleドライブ上の該当フォルダをサービスアカウントのメールアドレスに対して『共有（編集者）』状態にしているか必ず確認してください。 詳細: {drive_err}")
+            st.error(f"❌ 共有ドライブへの音声保存に失敗しました。ドライブID「{TARGET_DRIVE_ID}」に対してサービスアカウントのメールアドレスが『管理者』または『コンテンツ管理者』として追加されているか必ずご確認ください。 詳細: {drive_err}")
             st.stop()
         
         # 2. Geminiによる音声採点
@@ -330,7 +343,7 @@ elif st.session_state.step == "finish":
             score = "B"
             advice = ai_output
             
-        # 💡 横長のシート構成に追随するよう、各設問データを配列の末尾へ結合していく
+        # 横長のシート構成に追随するよう、各設問データを配列の末尾へ結合
         listen_count = st.session_state.listen_counts[q['id']]
         row_data.extend([audio_link, transcription, score, advice, f"{listen_count}回"])
         
@@ -339,7 +352,7 @@ elif st.session_state.step == "finish":
     status_text.empty()
     progress_bar.empty()
     
-    # 💡 【対策2】全設問分の連結データを、もっとも安全な A:A 指定で Results シートの最下行へ一発書き込み
+    # 全設問分の連結データを、もっとも安全な A:A 指定で Results シートの最下行へ一発書き込み
     try:
         sheets_service.spreadsheets().values().append(
             spreadsheetId=SPREADSHEET_ID,
