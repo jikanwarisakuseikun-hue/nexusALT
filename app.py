@@ -3,6 +3,7 @@ import json
 import time
 import sys
 import os
+from gtts import gTTS  # 🔊 音声再生の安定化のために導入
 
 # 🌟 st_audiorec の読み込みパス問題を強制解決するロジック
 try:
@@ -94,7 +95,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 【安全設計】そのまま貼り付けられたJSONテキストを安全にパース
+# 🔒 Secretsのパース
 try:
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
     raw_json_text = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -127,13 +128,14 @@ if "student_info" not in st.session_state:
     st.session_state.student_info = {}
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {}
+if "listen_counts" not in st.session_state:
+    st.session_state.listen_counts = {1: 0, 2: 0, 3: 0} # 各問題の再生回数をカウント
 if "questions_data" not in st.session_state:
     st.session_state.questions_data = None
 
-# 📥 【新機能】スプレッドシートの「Questions」シートからデータを動的に読み取る
+# 📥 スプレッドシートの「Questions」シートからデータを動的に読み取る
 if st.session_state.questions_data is None:
     try:
-        # Questionsシートの3行目（A3:G3）をピンポイントで取得
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
             range="'Questions'!A3:G3"
@@ -141,29 +143,24 @@ if st.session_state.questions_data is None:
         
         row_values = result.get("values", [])[0]
         
-        # 取得したデータを変数に割り当て
-        class_name = row_values[0] if len(row_values) > 0 else "不明なクラス"
+        # 💡 【対策3】シートに書かれているクラス名（例: A3セル）を取得
+        st.session_state.class_name = row_values[0] if len(row_values) > 0 else "設定なし"
         
-        # 3問分の「お題」と「基準」を組み立てる
+        # 問題データのセット
         st.session_state.questions_data = [
             {"id": 1, "text": row_values[1] if len(row_values) > 1 else "", "criterion": row_values[2] if len(row_values) > 2 else ""},
             {"id": 2, "text": row_values[3] if len(row_values) > 3 else "", "criterion": row_values[4] if len(row_values) > 4 else ""},
             {"id": 3, "text": row_values[5] if len(row_values) > 5 else "", "criterion": row_values[6] if len(row_values) > 6 else ""}
         ]
-        st.session_state.class_name = class_name
         
-        # スプレッドシートから読み取ったAPIキーを使ってGeminiを設定
-        gemini_key = st.secrets["GEMINI_API_KEY"]  # Secrets管理画面の値を使用
+        gemini_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=gemini_key)
-        
-        # 録音保持用の辞書をここで初期化
         st.session_state.recorded_audios = {1: None, 2: None, 3: None}
         
     except Exception as e:
-        st.error(f"スプレッドシート（Questionsシート）からのデータ読み込みに失敗しました。シート名や共有権限を確認してください。 エラー詳細: {e}")
+        st.error(f"Questionsシートからのデータ読み込みに失敗しました。詳細: {e}")
         st.stop()
 
-# 読み込んだ問題データを使用
 QUESTIONS = st.session_state.questions_data
 FOLDER_ID = st.secrets["FOLDER_ID"]
 
@@ -177,8 +174,8 @@ if st.session_state.step == "init":
     
     col1, col2 = st.columns(2)
     with col1:
-        # スプレッドシートから取得したクラス名を初期値として表示
-        cls = st.selectbox("クラス", [st.session_state.class_name, "1年1組", "1年2組", "2年1組", "2年2組", "3年1組", "3年2組"])
+        # 💡 【対策3】セレクトボックスにはシートから読み取ったクラス名のみを表示
+        cls = st.selectbox("クラス", [st.session_state.class_name])
     with col2:
         num = st.selectbox("名簿番号", [f"{i}番" for i in range(1, 46)])
         
@@ -203,10 +200,28 @@ elif st.session_state.step == "test":
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
-    # スプレッドシートから読み込んだ問題文（英語）を音声合成
-    tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={q['text'].replace(' ', '+')}"
-    st.audio(tts_url, format="audio/mp3")
-    st.markdown('<p style="color:#64748b; font-size:12px; margin-top:5px;">※上の再生ボタンを押して質問をよく聴いてください。</p>', unsafe_allow_html=True)
+    
+    # 💡 【対策1】Google翻訳URLを廃止し、gTTSを使ってサーバーサイドで100%安全に音声を生成
+    try:
+        if f"audio_bytes_{q['id']}" not in st.session_state:
+            tts = gTTS(text=q['text'], lang='en', tld='com')
+            # メモリ上に音声データを一時保存
+            import io
+            fp = io.BytesIO()
+            tts.write_to_fp(fp)
+            st.session_state[f"audio_bytes_{q['id']}"] = fp.getvalue()
+        
+        # 音声の再生
+        st.audio(st.session_state[f"audio_bytes_{q['id']}"], format="audio/mp3")
+        
+        # 再生ボタンを生徒が押したと仮定し、この問題の再生ステップに入ったら回数をカウント
+        if st.button("🔊 質問を聴いた（回数を記録）", key=f"listen_btn_{q['id']}"):
+            st.session_state.listen_counts[q['id']] += 1
+            st.success(f"再生回数を記録しました（現在: {st.session_state.listen_counts[q['id']]}回）")
+            
+    except Exception as tts_err:
+        st.error("問題音声の生成に失敗しました。ページをリロードしてください。")
+        
     st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -216,7 +231,7 @@ elif st.session_state.step == "test":
     if st_audiorec is not None:
         try:
             wav_audio_data = st_audiorec()
-        except Exception as e:
+        except Exception:
             pass
     
     if wav_audio_data is None:
@@ -261,6 +276,10 @@ elif st.session_state.step == "finish":
     status_text = st.empty()
     total_q = len(QUESTIONS)
     
+    # 💡 【対策2】生徒1人分の横に長い行データを格納するリストを初期化
+    # 列定義: クラス, 名簿番号, 氏名
+    row_data = [info["class"], info["number"], info["name"]]
+    
     for idx, q in enumerate(QUESTIONS):
         status_text.markdown(f"**【処理中】 Question {idx+1} の音声を保存し、AI採点しています...**")
         audio_bytes = st.session_state.recorded_audios[q["id"]]
@@ -275,7 +294,7 @@ elif st.session_state.step == "finish":
         ).execute()
         audio_link = drive_file.get("webViewLink")
         
-        # 2. Geminiによる音声採点（スプレッドシートの評価基準をプロンプトに注入）
+        # 2. Geminiによる音声採点
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
         You are an expert English ALT (Assistant Language Teacher) at a Japanese school.
@@ -289,10 +308,11 @@ elif st.session_state.step == "finish":
         【AI文字起こし】
         (Write out exactly what the student said in English here. If noise only, write '音声認識不可')
         
-        【採点フィードバック】
-        ・総合評価: (A / B / C based on the criterion)
-        ・文法・表現: (Good points or corrections)
-        ・発音・流暢さ: (Advice for improvement)
+        【総合評価】
+        (Write ONLY A, B, or C here based on the criterion)
+        
+        【アドバイス】
+        (Provide short advice in Japanese about grammar, pronunciation and fluency within 2-3 sentences)
         """
         
         response = model.generate_content([
@@ -301,40 +321,48 @@ elif st.session_state.step == "finish":
         ])
         ai_output = response.text
         
+        # 採点結果のパース（切り分け）
         try:
-            parts = ai_output.split("【採点フィードバック】")
-            transcription = parts[0].replace("【AI文字起こし】", "").strip()
-            feedback = parts[1].strip()
+            transcription = ai_output.split("【AI文字起こし】")[1].split("【総合評価】")[0].strip()
+            score = ai_output.split("【総合評価】")[1].split("【アドバイス】")[0].strip()
+            advice = ai_output.split("【アドバイス】")[1].strip()
         except:
             transcription = "認識完了"
-            feedback = ai_output
+            score = "B"
+            advice = ai_output
             
-        # 3. Googleスプレッドシートの「Results」シートへ書き込み
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        row_data = [timestamp, info["class"], info["number"], info["name"], f"Q{q['id']}", transcription, feedback, audio_link]
-        
-        try:
-            sheets_service.spreadsheets().values().append(
-                spreadsheetId=SPREADSHEET_ID,
-                range="'Results'!A:H",
-                valueInputOption="USER_ENTERED",
-                body={"values": [row_data]}
-            ).execute()
-        except Exception as sheet_err:
-            st.error(f"Resultsシートへのデータ追加時にエラーが発生しました: {sheet_err}")
+        # 💡 【対策2】1問題ごとに、画像と同じ順番で横にデータを追加（音声, テキスト, 評価, アドバイス, 回数）
+        listen_count = st.session_state.listen_counts[q['id']]
+        row_data.extend([audio_link, transcription, score, advice, f"{listen_count}回"])
         
         progress_bar.progress(int((idx + 1) / total_q * 100))
         
     status_text.empty()
     progress_bar.empty()
     
+    # 💡 【対策2】全問題のデータを「横1列」に連結したものを、一発でResultsシートの最下行へ追記
+    try:
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range="'Results'!A:Z",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row_data]}
+        ).execute()
+    except Exception as sheet_err:
+        st.error(f"Resultsシートへのデータ保存に失敗しました: {sheet_err}")
+        
     st.balloons()
     st.success("🎉 スピーキングテストの解答送信とAI採点がすべて完了しました！")
     
     if st.button("🔄 次の生徒の入力を開始"):
         st.session_state.step = "init"
         st.session_state.current_q_idx = 0
-        st.session_state.recorded_audios = {1: None, 2: None, 3: None}
+        st.session_state.recorded_audios = {}
+        st.session_state.listen_counts = {1: 0, 2: 0, 3: 0}
+        # 各問題の音声キャッシュをクリアして次の生徒へ
+        for i in [1, 2, 3]:
+            if f"audio_bytes_{i}" in st.session_state:
+                del st.session_state[f"audio_bytes_{i}"]
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
