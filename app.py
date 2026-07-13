@@ -8,7 +8,6 @@ import os
 try:
     import st_audiorec
 except ModuleNotFoundError:
-    # サーバー内のパッケージ配置先を自動検索してパスへ追加
     for path in sys.path:
         if "site-packages" in path:
             potential_path = os.path.join(path, "st_audiorec")
@@ -17,7 +16,6 @@ except ModuleNotFoundError:
     try:
         from st_audiorec import st_audiorec
     except ImportError:
-        # 万が一読み込めない場合、標準の録音コンポーネントを代替として配置
         st_audiorec = None
 
 from google.oauth2.service_account import Credentials
@@ -96,12 +94,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🔒 Secretsのパース
+# 🔒 【安全設計】そのまま貼り付けられたJSONテキストを安全にパース
 try:
-    gemini_key = st.secrets["GEMINI_API_KEY"]
     SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
-    FOLDER_ID = st.secrets["FOLDER_ID"]
-    
     raw_json_text = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
     service_account_info = json.loads(raw_json_text)
     
@@ -109,10 +104,10 @@ try:
         service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
         
 except Exception as e:
-    st.error(f"【設定エラー】Secretsの読み込みまたはJSONの解析に失敗しました。設定内容を確認してください。 エラー詳細: {e}")
+    st.error(f"【設定エラー】Secretsの読み込みに失敗しました。 エラー詳細: {e}")
     st.stop()
 
-# 🌐 APIの初期化
+# 🌐 Google APIの初期化
 creds = Credentials.from_service_account_info(
     service_account_info, 
     scopes=[
@@ -122,14 +117,6 @@ creds = Credentials.from_service_account_info(
 )
 sheets_service = build("sheets", "v4", credentials=creds)
 drive_service = build("drive", "v3", credentials=creds)
-genai.configure(api_key=gemini_key)
-
-# 📝 テストの問題マスタ
-QUESTIONS = [
-    {"id": 1, "text": "What did you do last weekend? Please tell me about it in detail."},
-    {"id": 2, "text": "Why do you think learning English is important for your future?"},
-    {"id": 3, "text": "Look at the imaginary situation. If you could travel anywhere in the world right now, where would you go and why?"}
-]
 
 # 💾 セッション状態の初期化
 if "step" not in st.session_state:
@@ -139,7 +126,46 @@ if "current_q_idx" not in st.session_state:
 if "student_info" not in st.session_state:
     st.session_state.student_info = {}
 if "recorded_audios" not in st.session_state:
-    st.session_state.recorded_audios = {q["id"]: None for q in QUESTIONS}
+    st.session_state.recorded_audios = {}
+if "questions_data" not in st.session_state:
+    st.session_state.questions_data = None
+
+# 📥 【新機能】スプレッドシートの「Questions」シートからデータを動的に読み取る
+if st.session_state.questions_data is None:
+    try:
+        # Questionsシートの3行目（A3:G3）をピンポイントで取得
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range="'Questions'!A3:G3"
+        ).execute()
+        
+        row_values = result.get("values", [])[0]
+        
+        # 取得したデータを変数に割り当て
+        class_name = row_values[0] if len(row_values) > 0 else "不明なクラス"
+        
+        # 3問分の「お題」と「基準」を組み立てる
+        st.session_state.questions_data = [
+            {"id": 1, "text": row_values[1] if len(row_values) > 1 else "", "criterion": row_values[2] if len(row_values) > 2 else ""},
+            {"id": 2, "text": row_values[3] if len(row_values) > 3 else "", "criterion": row_values[4] if len(row_values) > 4 else ""},
+            {"id": 3, "text": row_values[5] if len(row_values) > 5 else "", "criterion": row_values[6] if len(row_values) > 6 else ""}
+        ]
+        st.session_state.class_name = class_name
+        
+        # スプレッドシートから読み取ったAPIキーを使ってGeminiを設定
+        gemini_key = st.secrets["GEMINI_API_KEY"]  # Secrets管理画面の値を使用
+        genai.configure(api_key=gemini_key)
+        
+        # 録音保持用の辞書をここで初期化
+        st.session_state.recorded_audios = {1: None, 2: None, 3: None}
+        
+    except Exception as e:
+        st.error(f"スプレッドシート（Questionsシート）からのデータ読み込みに失敗しました。シート名や共有権限を確認してください。 エラー詳細: {e}")
+        st.stop()
+
+# 読み込んだ問題データを使用
+QUESTIONS = st.session_state.questions_data
+FOLDER_ID = st.secrets["FOLDER_ID"]
 
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
@@ -151,7 +177,8 @@ if st.session_state.step == "init":
     
     col1, col2 = st.columns(2)
     with col1:
-        cls = st.selectbox("クラス", ["1年1組", "1年2組", "2年1組", "2年2組", "3年1組", "3年2組"])
+        # スプレッドシートから取得したクラス名を初期値として表示
+        cls = st.selectbox("クラス", [st.session_state.class_name, "1年1組", "1年2組", "2年1組", "2年2組", "3年1組", "3年2組"])
     with col2:
         num = st.selectbox("名簿番号", [f"{i}番" for i in range(1, 46)])
         
@@ -176,6 +203,7 @@ elif st.session_state.step == "test":
     st.markdown('<div class="test-card">', unsafe_allow_html=True)
     
     st.markdown('<div class="audio-box">', unsafe_allow_html=True)
+    # スプレッドシートから読み込んだ問題文（英語）を音声合成
     tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q={q['text'].replace(' ', '+')}"
     st.audio(tts_url, format="audio/mp3")
     st.markdown('<p style="color:#64748b; font-size:12px; margin-top:5px;">※上の再生ボタンを押して質問をよく聴いてください。</p>', unsafe_allow_html=True)
@@ -184,15 +212,13 @@ elif st.session_state.step == "test":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("##### 🎙️ 回答を録音する")
     
-    # 🛠️ 録音コンポーネントのエラーを2重でガード
     wav_audio_data = None
     if st_audiorec is not None:
         try:
             wav_audio_data = st_audiorec()
         except Exception as e:
-            st.warning("カスタム録音モジュールの起動に失敗しました。標準のマイクを使用します。")
+            pass
     
-    # 万が一カスタム録音部品が死んでいる場合は、Streamlit標準の録音機能に自動切り替え
     if wav_audio_data is None:
         standard_audio = st.audio_input("マイク入力を許可して録音ボタンを押してください", key=f"audio_input_{q['id']}")
         if standard_audio is not None:
@@ -249,18 +275,22 @@ elif st.session_state.step == "finish":
         ).execute()
         audio_link = drive_file.get("webViewLink")
         
-        # 2. Geminiによる音声採点
+        # 2. Geminiによる音声採点（スプレッドシートの評価基準をプロンプトに注入）
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
         You are an expert English ALT (Assistant Language Teacher) at a Japanese school.
         Please evaluate the student's spoken audio response for this question: "{q['text']}"
+        
+        [Strict Evaluation Criterion]
+        Use this specific grading guideline provided by the teacher:
+        "{q['criterion']}"
         
         Provide the output strictly in Japanese with the following format:
         【AI文字起こし】
         (Write out exactly what the student said in English here. If noise only, write '音声認識不可')
         
         【採点フィードバック】
-        ・総合評価: (A / B / C)
+        ・総合評価: (A / B / C based on the criterion)
         ・文法・表現: (Good points or corrections)
         ・発音・流暢さ: (Advice for improvement)
         """
@@ -279,7 +309,7 @@ elif st.session_state.step == "finish":
             transcription = "認識完了"
             feedback = ai_output
             
-        # 3. Googleスプレッドシートへ書き込み（Resultsシート指定）
+        # 3. Googleスプレッドシートの「Results」シートへ書き込み
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         row_data = [timestamp, info["class"], info["number"], info["name"], f"Q{q['id']}", transcription, feedback, audio_link]
         
@@ -304,13 +334,13 @@ elif st.session_state.step == "finish":
     if st.button("🔄 次の生徒の入力を開始"):
         st.session_state.step = "init"
         st.session_state.current_q_idx = 0
-        st.session_state.recorded_audios = {q["id"]: None for q in QUESTIONS}
+        st.session_state.recorded_audios = {1: None, 2: None, 3: None}
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# 📊 著作権表示
+# 📊 著作権表示（フッター固定）
 st.markdown("""
     <div class="footer">
         © 2026 Nexus ALT. All Rights Reserved. Digital Speaking Assessment System.
