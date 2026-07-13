@@ -189,7 +189,7 @@ if st.session_state.step == "init":
     with col2:
         num = st.selectbox("名簿番号", [f"{i}番" for i in range(1, 46)])
         
-    name = st.text_input("氏名（カタカナ）", placeholder="例: トウキョウ タロウ")
+    name = st.text_input("氏名（イニシャル）", placeholder="例: TS")
     
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("テストを開始する ➔", use_container_width=True, type="primary"):
@@ -454,6 +454,6 @@ st.markdown('</div>', unsafe_allow_html=True)
 # 📊 著作権表示（フッター固定）
 st.markdown("""
     <div class="footer">
-        © 2026 Nexus ALT. All Rights Reserved. Digital Speaking Assessment System.
+        © 2026 Nexus ALT. Shogo Takeuchi All Rights Reserved. Digital Speaking Assessment System.
     </div>
 """, unsafe_allow_html=True)
