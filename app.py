@@ -307,7 +307,7 @@ elif st.session_state.step == "finish":
     target_sheet_name = info["class"]
     
     if not st.session_state.is_saved_successfully:
-        st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>音声を安全にアップロードし、データを記録しています</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>音声を安全にアップロードし、文字起こしを生成しています</p></div>', unsafe_allow_html=True)
         st.markdown('<div class="test-card">', unsafe_allow_html=True)
         
         progress_bar = st.progress(0)
@@ -317,10 +317,10 @@ elif st.session_state.step == "finish":
         row_data = [info["class"], info["number"], info["name"]]
         
         for idx, q in enumerate(QUESTIONS):
-            status_text.markdown(f"**【データ転送中】 Question {idx+1} / {total_q} の音声を処理しています...**")
             audio_bytes = st.session_state.recorded_audios[q["id"]]
             
             # 1. Googleドライブへ音声ファイルを確実に保存
+            status_text.markdown(f"**【1/2 音声保存中】 Question {idx+1} / {total_q} のファイルを転送しています...**")
             filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
             media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
             file_metadata = {
@@ -341,7 +341,9 @@ elif st.session_state.step == "finish":
                 st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
                 st.stop()
             
-            # 2. 最速文字起こし（余計なアドバイス指示を省き、エラー時は即座にスキップ）
+            # 2. 🦏 【超強力・絶対文字起こしリトライロジック】 🦏
+            # サーバーから拒否されても、時間を少しずつ延ばしながら最大10回までしつこく自動リトライします。
+            status_text.markdown(f"**【2/2 文字起こし中】 Question {idx+1} / {total_q} のAI処理を試みています...**")
             transcription = "（音声データ確認完了）"
             score = "提出済"
             advice_placeholder = "（アドバイス非表示設定）"
@@ -349,7 +351,8 @@ elif st.session_state.step == "finish":
             model = genai.GenerativeModel("gemini-2.5-flash")
             prompt = "Transcribe the following English audio precisely. Output ONLY the transcription text. If it is only background noise or silent, output 'No speech'."
             
-            for attempt in range(2): # 負荷低減のため最大2回だけトライ
+            max_attempts = 10  # 🌟 執念の10回リトライ設定
+            for attempt in range(max_attempts):
                 try:
                     response = model.generate_content([
                         prompt,
@@ -357,14 +360,17 @@ elif st.session_state.step == "finish":
                     ])
                     if response.text.strip():
                         transcription = response.text.strip()
-                    break
-                except Exception:
-                    if attempt == 1:
-                        transcription = "（サーバー混雑のため文字起こしスキップ・音声は保存済）"
-                    time.sleep(1)
+                    break  # 成功したら即座にループを抜ける
+                except Exception as e:
+                    # 回数が増えるごとに、1秒、2秒、3秒...と待機時間を少しずつ長くして混雑を回避
+                    sleep_time = min(1 + attempt, 4)
+                    if attempt < max_attempts - 1:
+                        time.sleep(sleep_time)
+                    else:
+                        # 10回すべてで完全に通信が途絶した時のみ、最悪の事態としてエラー文を記録
+                        transcription = f"（アクセス集中により文字起こしエラー。音声ファイルは正常保存済）"
             
             listen_count = st.session_state.listen_counts[q['id']]
-            # [音声リンク, 文字起こし, 評価(提出済), アドバイス枠, 再生数] の順で結合
             row_data.extend([audio_link, transcription, score, advice_placeholder, f"{listen_count}回"])
             progress_bar.progress(int((idx + 1) / total_q * 100))
             
@@ -418,7 +424,7 @@ elif st.session_state.step == "finish":
             st.error(f"スプレッドシートへのデータ保存に失敗しました: {sheet_err}")
             st.stop()
 
-    # 📥 保存完了後の画面表示（極めてシンプルに「保存しました」のみを通知）
+    # 📥 保存完了後の画面表示
     else:
         st.markdown('<div class="main-header"><h1>🏁 テスト完了</h1><p>Nexus ALT Digital Speaking Test</p></div>', unsafe_allow_html=True)
         st.markdown('<div class="test-card">', unsafe_allow_html=True)
@@ -427,7 +433,7 @@ elif st.session_state.step == "finish":
         <div class="result-box">
             <h3 style="color: #15803d; margin: 0;">✅ 保存しました</h3>
             <p style="margin: 10px 0 0 0; color: #1e293b; font-size: 15px;">
-                <b>{info['class']} {info['number']} {info['name']} さん</b> の音声ファイルと回答データの保存がすべて正常に完了しました。
+                <b>{info['class']} {info['number']} {info['name']} さん</b> の音声ファイルと文字起こしデータの保存がすべて正常に完了しました。
             </p>
         </div>
         """, unsafe_allow_html=True)
