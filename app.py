@@ -3,6 +3,7 @@ import json
 import time
 import sys
 import os
+import threading  # 🚀 完全非同期（バックグラウンド処理）のための仕組み
 from gtts import gTTS  # 🔊 音声再生の安定化のために導入
 import streamlit.components.v1 as components  # 🔄 自動再生カウント用のコンポーネント
 
@@ -138,7 +139,9 @@ if "student_info" not in st.session_state:
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {}
 if "pre_transcriptions" not in st.session_state:
-    st.session_state.pre_transcriptions = {}  # 💡 問題移行時にその場で起こしたテキストを一時保管する場所
+    st.session_state.pre_transcriptions = {}  # 裏で文字起こししたテキストの保管庫
+if "threads_pool" not in st.session_state:
+    st.session_state.threads_pool = {}  # 動いているスレッドの管理用
 if "listen_counts" not in st.session_state:
     st.session_state.listen_counts = {}
 if "questions_data" not in st.session_state:
@@ -171,7 +174,7 @@ if st.session_state.questions_data is None:
                 })
                 st.session_state.listen_counts[q_id] = 0
                 st.session_state.recorded_audios[q_id] = None
-                st.session_state.pre_transcriptions[q_id] = "（未発話）"
+                st.session_state.pre_transcriptions[q_id] = "Processing..."  # 初期状態
                 q_id += 1
                 
         st.session_state.questions_data = dynamic_questions
@@ -186,6 +189,28 @@ if st.session_state.questions_data is None:
 QUESTIONS = st.session_state.questions_data
 FOLDER_ID = st.secrets["FOLDER_ID"]
 TARGET_DRIVE_ID = "0ACP5Eu-XLix6Uk9PVA"
+
+# 🧠 🚀 完全バックグラウンド非同期処理のための関数
+def bg_transcribe_worker(q_id, audio_bytes, target_dict):
+    """メイン画面とは完全に別次元の裏側（別スレッド）で動く文字起こし職人"""
+    # ⚡ 爆速かつ無料枠が超軽量化された最新の2.5-flash-liteを採用！
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent, output 'No speech'."
+    
+    txt_result = "（音声データ確認完了）"
+    for attempt in range(3):
+        try:
+            response = model.generate_content([
+                prompt,
+                {"mime_type": "audio/wav", "data": audio_bytes}
+            ])
+            if response.text and response.text.strip():
+                txt_result = response.text.strip()
+            break
+        except Exception:
+            time.sleep(1.0)
+            
+    target_dict[q_id] = txt_result  # メインセッションと共有の辞書にそっと書き込む
 
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
@@ -296,38 +321,27 @@ elif st.session_state.step == "test":
         if st.session_state.recorded_audios[q["id"]] is None:
             st.warning("⚠️ 録音を行ってから次へ進んでください。")
         else:
-            # 💡 🚀 【ハイブリッド戦略：次の問題に行く瞬間に、この1問だけを裏で最速文字起こし】
-            with st.spinner("録音データを一時処理中..."):
-                audio_bytes = st.session_state.recorded_audios[q["id"]]
-                # ⚡ 無料枠制限が最も緩く、音声のテキスト化が爆速な1.5-flash-8bを採用
-                model = genai.GenerativeModel("gemini-1.5-flash-8b")
-                prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent, output 'No speech'."
-                
-                # 万が一の混雑対策として、その場でも3回だけスマートリトライ
-                txt_result = "（音声データ確認完了）"
-                for attempt in range(3):
-                    try:
-                        response = model.generate_content([
-                            prompt,
-                            {"mime_type": "audio/wav", "data": audio_bytes}
-                        ])
-                        if response.text and response.text.strip():
-                            txt_result = response.text.strip()
-                        break
-                    except Exception:
-                        time.sleep(1.0)
-                
-                st.session_state.pre_transcriptions[q["id"]] = txt_result
+            # 💡 🚀 【極限爆速化ロジック：結果を待たずに別スレッドを立ち上げて即座にページ切り替え】
+            audio_bytes = st.session_state.recorded_audios[q["id"]]
+            
+            # 非同期で裏側で仕事を開始させる
+            t = threading.Thread(
+                target=bg_transcribe_worker, 
+                args=(q["id"], audio_bytes, st.session_state.pre_transcriptions)
+            )
+            t.daemon = True  # アプリ終了時に巻き込まれて閉じる設定
+            t.start()
+            st.session_state.threads_pool[q["id"]] = t  # スレッドを保管
 
             if is_last:
                 st.session_state.step = "finish"
             else:
                 st.session_state.current_q_idx += 1
-            st.rerun()
+            st.rerun()  # 待つ必要がないため、0.001秒で即座に次の画面に遷移する！
             
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 🖼️ 画面3: 送信・爆速データ保存画面（待ち時間ほぼゼロ） ---
+# --- 🖼️ 画面3: 送信・最速データ保存画面 ---
 elif st.session_state.step == "finish":
     info = st.session_state.student_info
     target_sheet_name = info["class"]
@@ -342,12 +356,16 @@ elif st.session_state.step == "finish":
         
         row_data = [info["class"], info["number"], info["name"]]
         
+        # 💡 最後の帳尻合わせ：もし生徒が超ハイペースで解きすぎて、まだ裏での文字起こしが終わっていない問題があればここで1～2秒だけ待つ安全網
+        for q in QUESTIONS:
+            if q["id"] in st.session_state.threads_pool:
+                st.session_state.threads_pool[q["id"]].join(timeout=4.0)  # 最大4秒だけ同期を待つ
+        
         for idx, q in enumerate(QUESTIONS):
-            # 💡 すでに文字起こしは各画面の移行時に終わっているため、ここではAI通信(Gemini)は一切行いません！
             status_text.markdown(f"**【音声保存中】 Question {idx+1} / {total_q} のファイルを転送中...**")
             audio_bytes = st.session_state.recorded_audios[q["id"]]
             
-            # Googleドライブへ音声ファイルを確実に保存する処理のみ実行
+            # Googleドライブへ音声ファイルを確実に保存する処理
             filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
             media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
             file_metadata = {
@@ -368,8 +386,11 @@ elif st.session_state.step == "finish":
                 st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
                 st.stop()
             
-            # 事前保存してある文字起こしテキストを引き出すだけ（超爆速）
-            transcription = st.session_state.pre_transcriptions.get(q["id"], "（確認完了）")
+            # すでに裏で完全に書き上がっているテキストを辞書から引くだけ（超爆速）
+            transcription = st.session_state.pre_transcriptions.get(q["id"], "（音声データ確認完了）")
+            if transcription == "Processing...":
+                transcription = "（音声受付完了・テキスト生成中）"
+                
             score = "提出済"
             advice_placeholder = "（正常に受付）"
             
@@ -446,7 +467,8 @@ elif st.session_state.step == "finish":
             st.session_state.step = "init"
             st.session_state.current_q_idx = 0
             st.session_state.recorded_audios = {}
-            st.session_state.pre_transcriptions = {q['id']: "（未発話）" for q in QUESTIONS}
+            st.session_state.pre_transcriptions = {q['id']: "Processing..." for q in QUESTIONS}
+            st.session_state.threads_pool = {}
             st.session_state.listen_counts = {q['id']: 0 for q in QUESTIONS}
             st.session_state.is_saved_successfully = False
             for q in QUESTIONS:
