@@ -187,13 +187,17 @@ QUESTIONS = st.session_state.questions_data
 FOLDER_ID = st.secrets["FOLDER_ID"]
 TARGET_DRIVE_ID = "0ACP5Eu-XLix6Uk9PVA"
 
-# 🧠 その場で確実に文字起こしをする関数（最新爆速モデル）
+# 🧠 その場で確実に文字起こしをする関数（超安定モデル gemini-1.5-flash）
 def transcribe_audio_now(audio_bytes):
-    # 最新・最軽量の爆速モデルを指定
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    if not audio_bytes or len(audio_bytes) < 100:
+        return "（エラー: 音声データが空、または録音に失敗しています）"
+
+    # 確実に動作する1.5-flashを指定
+    model = genai.GenerativeModel("gemini-1.5-flash")
     prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent or no speech, output 'No speech'."
     
-    for attempt in range(3):
+    last_error = ""
+    for attempt in range(2):
         try:
             response = model.generate_content([
                 prompt,
@@ -201,10 +205,12 @@ def transcribe_audio_now(audio_bytes):
             ])
             if response.text and response.text.strip():
                 return response.text.strip()
-            break
-        except Exception:
-            time.sleep(1.0)
-    return "（文字起こし失敗または無音）"
+        except Exception as e:
+            last_error = str(e)
+            time.sleep(0.5)
+            
+    # エラーが発生した場合、生のエラー原因を戻り値にしてスプレッドシートに書き込み、確認できるようにします
+    return f"（APIエラー: {last_error}）"
 
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
@@ -315,8 +321,8 @@ elif st.session_state.step == "test":
         if st.session_state.recorded_audios[q["id"]] is None:
             st.warning("⚠️ 録音を行ってから次へ進んでください。")
         else:
-            # 💡 ボタンを押した瞬間に、この1問だけ確実に文字起こし（最新モデルなので1〜2秒で終わります）
-            with st.spinner("音声をのデータを確認中..."):
+            # 💡 ボタンを押した瞬間に、その場で文字起こしを実行
+            with st.spinner("AIが音声を解析中..."):
                 audio_bytes = st.session_state.recorded_audios[q["id"]]
                 result_text = transcribe_audio_now(audio_bytes)
                 st.session_state.transcriptions[q["id"]] = result_text
@@ -369,8 +375,8 @@ elif st.session_state.step == "finish":
                 st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
                 st.stop()
             
-            # 各ステップですでに確定している英語テキストを取得
-            transcription = st.session_state.transcriptions.get(q["id"], "（無音または解析不能）")
+            # 保存しておいた文字起こし結果（エラーの場合は生のエラーログ）を取得
+            transcription = st.session_state.transcriptions.get(q["id"], "（解析データなし）")
             
             score = "提出済"
             advice_placeholder = "（正常に受付）"
