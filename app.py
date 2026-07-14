@@ -3,7 +3,6 @@ import json
 import time
 import sys
 import os
-import threading  # 🚀 完全非同期（バックグラウンド処理）のための仕組み
 from gtts import gTTS  # 🔊 音声再生の安定化のために導入
 import streamlit.components.v1 as components  # 🔄 自動再生カウント用のコンポーネント
 
@@ -138,10 +137,8 @@ if "student_info" not in st.session_state:
     st.session_state.student_info = {}
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {}
-if "pre_transcriptions" not in st.session_state:
-    st.session_state.pre_transcriptions = {}  # 裏で文字起こししたテキストの保管庫
-if "threads_pool" not in st.session_state:
-    st.session_state.threads_pool = {}  # 動いているスレッドの管理用
+if "transcriptions" not in st.session_state:
+    st.session_state.transcriptions = {}  # 確定したテキストの保管庫
 if "listen_counts" not in st.session_state:
     st.session_state.listen_counts = {}
 if "questions_data" not in st.session_state:
@@ -174,7 +171,7 @@ if st.session_state.questions_data is None:
                 })
                 st.session_state.listen_counts[q_id] = 0
                 st.session_state.recorded_audios[q_id] = None
-                st.session_state.pre_transcriptions[q_id] = "Processing..."  # 初期状態
+                st.session_state.transcriptions[q_id] = ""
                 q_id += 1
                 
         st.session_state.questions_data = dynamic_questions
@@ -190,14 +187,12 @@ QUESTIONS = st.session_state.questions_data
 FOLDER_ID = st.secrets["FOLDER_ID"]
 TARGET_DRIVE_ID = "0ACP5Eu-XLix6Uk9PVA"
 
-# 🧠 完全バックグラウンド非同期処理のための関数
-def bg_transcribe_worker(q_id, audio_bytes, target_dict):
-    """メイン画面とは完全に別次元の裏側（別スレッド）で動く文字起こし職人"""
-    # ⚡ 爆速かつ無料枠が超軽量化された最新の2.5-flash-liteを採用！
+# 🧠 その場で確実に文字起こしをする関数（最新爆速モデル）
+def transcribe_audio_now(audio_bytes):
+    # 最新・最軽量の爆速モデルを指定
     model = genai.GenerativeModel("gemini-2.5-flash-lite")
-    prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent, output 'No speech'."
+    prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent or no speech, output 'No speech'."
     
-    txt_result = "（文字起こし失敗）"
     for attempt in range(3):
         try:
             response = model.generate_content([
@@ -205,12 +200,11 @@ def bg_transcribe_worker(q_id, audio_bytes, target_dict):
                 {"mime_type": "audio/wav", "data": audio_bytes}
             ])
             if response.text and response.text.strip():
-                txt_result = response.text.strip()
+                return response.text.strip()
             break
         except Exception:
             time.sleep(1.0)
-            
-    target_dict[q_id] = txt_result  # メインセッションと共有の辞書に上書き
+    return "（文字起こし失敗または無音）"
 
 st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
 
@@ -321,23 +315,17 @@ elif st.session_state.step == "test":
         if st.session_state.recorded_audios[q["id"]] is None:
             st.warning("⚠️ 録音を行ってから次へ進んでください。")
         else:
-            # 💡 結果を待たずに別スレッドを立ち上げて即座にページ切り替え
-            audio_bytes = st.session_state.recorded_audios[q["id"]]
-            
-            # 非同期で裏側で仕事を開始させる
-            t = threading.Thread(
-                target=bg_transcribe_worker, 
-                args=(q["id"], audio_bytes, st.session_state.pre_transcriptions)
-            )
-            t.daemon = True
-            t.start()
-            st.session_state.threads_pool[q["id"]] = t  # スレッドを保管
+            # 💡 ボタンを押した瞬間に、この1問だけ確実に文字起こし（最新モデルなので1〜2秒で終わります）
+            with st.spinner("音声をのデータを確認中..."):
+                audio_bytes = st.session_state.recorded_audios[q["id"]]
+                result_text = transcribe_audio_now(audio_bytes)
+                st.session_state.transcriptions[q["id"]] = result_text
 
             if is_last:
                 st.session_state.step = "finish"
             else:
                 st.session_state.current_q_idx += 1
-            st.rerun()  # 待つ必要がないため、即座に次の画面に遷移
+            st.rerun()
             
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -349,17 +337,6 @@ elif st.session_state.step == "finish":
     if not st.session_state.is_saved_successfully:
         st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>サーバーへデータを安全に記録しています</p></div>', unsafe_allow_html=True)
         st.markdown('<div class="test-card">', unsafe_allow_html=True)
-        
-        # 💡 【重要修正】裏での文字起こし（Geminiの返答）が完全に完了するまで確実に待ちます
-        with st.spinner("AIによる文字起こしの最終完了を待っています..."):
-            for q in QUESTIONS:
-                if q["id"] in st.session_state.threads_pool:
-                    st.session_state.threads_pool[q["id"]].join()  # 終わるまで確実に同期して待機
-                    
-                # もし何らかのエラーでProcessingのまま、または想定外のテキストが入っていた場合のセーフティ
-                current_text = st.session_state.pre_transcriptions.get(q["id"], "")
-                if current_text in ["Processing...", ""]:
-                    st.session_state.pre_transcriptions[q["id"]] = "（文字起こし失敗または無音）"
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -392,8 +369,8 @@ elif st.session_state.step == "finish":
                 st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
                 st.stop()
             
-            # すでに裏で完全に書き上がっている確定英語テキストを辞書から取得
-            transcription = st.session_state.pre_transcriptions.get(q["id"], "（無音または解析不能）")
+            # 各ステップですでに確定している英語テキストを取得
+            transcription = st.session_state.transcriptions.get(q["id"], "（無音または解析不能）")
             
             score = "提出済"
             advice_placeholder = "（正常に受付）"
@@ -471,8 +448,7 @@ elif st.session_state.step == "finish":
             st.session_state.step = "init"
             st.session_state.current_q_idx = 0
             st.session_state.recorded_audios = {}
-            st.session_state.pre_transcriptions = {q['id']: "Processing..." for q in QUESTIONS}
-            st.session_state.threads_pool = {}
+            st.session_state.transcriptions = {q['id']: "" for q in QUESTIONS}
             st.session_state.listen_counts = {q['id']: 0 for q in QUESTIONS}
             st.session_state.is_saved_successfully = False
             for q in QUESTIONS:
