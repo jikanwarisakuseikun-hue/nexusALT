@@ -23,7 +23,6 @@ except ModuleNotFoundError:
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
-import google.generativeai as genai
 
 # 📄 ページ設定とデザイン的適用
 st.set_page_config(
@@ -137,6 +136,8 @@ if "student_info" not in st.session_state:
     st.session_state.student_info = {}
 if "recorded_audios" not in st.session_state:
     st.session_state.recorded_audios = {}
+if "html_transcriptions" not in st.session_state:
+    st.session_state.html_transcriptions = {} # 💡 HTML側で文字起こししたテキストを保存
 if "listen_counts" not in st.session_state:
     st.session_state.listen_counts = {}
 if "questions_data" not in st.session_state:
@@ -169,12 +170,10 @@ if st.session_state.questions_data is None:
                 })
                 st.session_state.listen_counts[q_id] = 0
                 st.session_state.recorded_audios[q_id] = None
+                st.session_state.html_transcriptions[q_id] = "（未発話または音声認識不可）"
                 q_id += 1
                 
         st.session_state.questions_data = dynamic_questions
-        
-        gemini_key = st.secrets["GEMINI_API_KEY"]
-        genai.configure(api_key=gemini_key)
         
     except Exception as e:
         st.error(f"Questionsシートからのデータ動的読み込みに失敗しました。詳細: {e}")
@@ -233,15 +232,12 @@ elif st.session_state.step == "test":
         # 🔄 【自動再生数カウント機能】
         js_trigger = f"""
         <script>
-        const playCountKey = 'played_q_{q['id']}_' + parent.window.location.href;
         setTimeout(() => {{
             const audios = parent.document.querySelectorAll('audio');
             audios.forEach((audio) => {{
                 if(!audio.dataset.monitored) {{
                     audio.dataset.monitored = "true";
                     audio.addEventListener('play', () => {{
-                        const link = document.createElement('a');
-                        link.href = "?played_q={q['id']}&t=" + Date.now();
                         window.parent.postMessage({{type: 'streamlit:setComponentValue', value: true}}, '*');
                     }});
                 }}
@@ -279,10 +275,62 @@ elif st.session_state.step == "test":
         standard_audio = st.audio_input("マイク入力を許可して録音ボタンを押してください", key=f"audio_input_{q['id']}")
         if standard_audio is not None:
             wav_audio_data = standard_audio.read()
-    
+            
     if wav_audio_data is not None:
         st.session_state.recorded_audios[q["id"]] = wav_audio_data
         st.success("✅ この問題の録音が完了しました！")
+    
+    # 🌐 🛠️ 【HTML組み込みブラウザ文字起こし（Web Speech API）】 🛠️ 🌐
+    # マイク入力を開始すると、ブラウザ側が完全無料でリアルタイムに英語を文字起こしします。
+    html_recognizer = f"""
+    <div style="background:#f8fafc; border:1px solid #cbd5e1; padding:12px; border-radius:8px; margin-top:10px;">
+        <span style="font-size:12px; font-weight:bold; color:#64748b;">📝 リアルタイム英語文字起こし (HTML版):</span>
+        <div id="result-text" style="font-size:14px; color:#1e293b; font-style:italic; margin-top:5px; min-height:20px;">話すとここに英語が表示されます...</div>
+    </div>
+    <script>
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {{
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = true;
+        recognition.continuous = true;
+        
+        // 親ウィンドウ（Streamlit）のマイクや録音ボタンのアクションと連動させる簡易トリガー
+        window.addEventListener('blur', () => recognition.start());
+        window.parent.document.addEventListener('click', () => {{
+            try {{ recognition.start(); }} catch(e) {{}}
+        }});
+        
+        recognition.onresult = (event) => {{
+            let finalTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {{
+                if (event.results[i].isFinal) {{
+                    finalTranscript += event.results[i][0].transcript;
+                }}
+            }}
+            if(finalTranscript.strip() !== "") {{
+                document.getElementById('result-text').innerText = finalTranscript;
+                // Streamlitに文字起こしテキストを同期保存させるURLパラメータ連携
+                const currentUrl = new URL(window.parent.location.href);
+                currentUrl.searchParams.set('q_{q['id']}_txt', finalTranscript);
+                window.parent.history.replaceState({{}}, '', currentUrl.toString());
+            }}
+        }};
+        
+        // 常に稼働させる
+        recognition.onend = () => {{ try {{ recognition.start(); }} catch(e) {{}} }};
+        try {{ recognition.start(); }} catch(e) {{}}
+    }} else {{
+        document.getElementById('result-text').innerText = "⚠️ お使いのブラウザはHTML音声認識に対応していません。(Chrome推奨)";
+    }}
+    </script>
+    """
+    components.html(html_recognizer, height=75)
+    
+    # URLパラメータからHTML側で起こした英語を回収
+    captured_txt = st.query_params.get(f"q_{q['id']}_txt", "")
+    if captured_txt:
+        st.session_state.html_transcriptions[q["id"]] = captured_txt
         
     st.markdown("<br><br>", unsafe_allow_html=True)
     
@@ -301,13 +349,13 @@ elif st.session_state.step == "test":
             
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 🖼️ 画面3: 送信・最速文字起こし・データ保存画面 ---
+# --- 🖼️ 画面3: 送信・高速データ保存画面 ---
 elif st.session_state.step == "finish":
     info = st.session_state.student_info
     target_sheet_name = info["class"]
     
     if not st.session_state.is_saved_successfully:
-        st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>音声を安全にアップロードし、文字起こしを生成しています</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>音声を安全にアップロードし、データを記録しています</p></div>', unsafe_allow_html=True)
         st.markdown('<div class="test-card">', unsafe_allow_html=True)
         
         progress_bar = st.progress(0)
@@ -317,10 +365,10 @@ elif st.session_state.step == "finish":
         row_data = [info["class"], info["number"], info["name"]]
         
         for idx, q in enumerate(QUESTIONS):
+            status_text.markdown(f"**【データ保存中】 Question {idx+1} / {total_q} のファイルを転送しています...**")
             audio_bytes = st.session_state.recorded_audios[q["id"]]
             
             # 1. Googleドライブへ音声ファイルを確実に保存
-            status_text.markdown(f"**【1/2 音声保存中】 Question {idx+1} / {total_q} のファイルを転送しています...**")
             filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
             media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
             file_metadata = {
@@ -341,37 +389,13 @@ elif st.session_state.step == "finish":
                 st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
                 st.stop()
             
-            # 2. 🦏 【超強力・絶対文字起こしリトライロジック】 🦏
-            # サーバーから拒否されても、時間を少しずつ延ばしながら最大10回までしつこく自動リトライします。
-            status_text.markdown(f"**【2/2 文字起こし中】 Question {idx+1} / {total_q} のAI処理を試みています...**")
-            transcription = "（音声データ確認完了）"
+            # 2. HTML側で作成済みの文字起こし結果を割り当て（API通信一切なし！）
+            transcription = st.session_state.html_transcriptions.get(q["id"], "（音声認識データなし）")
             score = "提出済"
-            advice_placeholder = "（アドバイス非表示設定）"
-            
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            prompt = "Transcribe the following English audio precisely. Output ONLY the transcription text. If it is only background noise or silent, output 'No speech'."
-            
-            max_attempts = 10  # 🌟 執念の10回リトライ設定
-            for attempt in range(max_attempts):
-                try:
-                    response = model.generate_content([
-                        prompt,
-                        {"mime_type": "audio/wav", "data": audio_bytes}
-                    ])
-                    if response.text.strip():
-                        transcription = response.text.strip()
-                    break  # 成功したら即座にループを抜ける
-                except Exception as e:
-                    # 回数が増えるごとに、1秒、2秒、3秒...と待機時間を少しずつ長くして混雑を回避
-                    sleep_time = min(1 + attempt, 4)
-                    if attempt < max_attempts - 1:
-                        time.sleep(sleep_time)
-                    else:
-                        # 10回すべてで完全に通信が途絶した時のみ、最悪の事態としてエラー文を記録
-                        transcription = f"（アクセス集中により文字起こしエラー。音声ファイルは正常保存済）"
+            status_placeholder = "正常保存"
             
             listen_count = st.session_state.listen_counts[q['id']]
-            row_data.extend([audio_link, transcription, score, advice_placeholder, f"{listen_count}回"])
+            row_data.extend([audio_link, transcription, score, status_placeholder, f"{listen_count}回"])
             progress_bar.progress(int((idx + 1) / total_q * 100))
             
         status_text.empty()
@@ -443,11 +467,13 @@ elif st.session_state.step == "finish":
             st.session_state.step = "init"
             st.session_state.current_q_idx = 0
             st.session_state.recorded_audios = {}
+            st.session_state.html_transcriptions = {q['id']: "（未発話または音声認識不可）" for q in QUESTIONS}
             st.session_state.listen_counts = {q['id']: 0 for q in QUESTIONS}
             st.session_state.is_saved_successfully = False
             for q in QUESTIONS:
                 if f"audio_bytes_{q['id']}" in st.session_state:
                     del st.session_state[f"audio_bytes_{q['id']}"]
+            st.query_params.clear()
             st.clear_checkpoint() if hasattr(st, "clear_checkpoint") else None
             st.rerun()
             
