@@ -1,7 +1,5 @@
 streamlit
-pandas
 google-generativeai
-gTTS
 google-api-python-client
 google-auth
-gspread
+gTTS
