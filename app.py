@@ -183,7 +183,7 @@ def load_all_config():
         return pd.DataFrame()
 
 def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_records: dict, num_questions: int, max_retries=5):
-    """【B列(Grade)＋C列(Class)でシート自動分割・保存版】"""
+    """【学年＋クラス別シート自動生成・保存対応版】同時書き込みをリトライで解決する保存関数"""
     t_delta = datetime.timedelta(hours=9)
     JST = datetime.timezone(t_delta, 'JST')
     row_data = [
@@ -203,11 +203,12 @@ def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_rec
         else:
             row_data.extend(["", "", "", ""]) 
             
-    # B列のGradeとC列のClassを結合してシート名にする（例: "2" + "B" = "2B"）
-    grade_str = str(student_info.get("grade", "")).strip()
-    class_str = str(student_info.get("class_num", "")).strip()
+    # 学年とクラスを結合してシート名にする（例: "2年" + "A組" = "2年A組"）
+    grade_str = str(student_info.get("grade", ""))
+    class_str = str(student_info.get("class_num", ""))
     target_sheet_name = f"{grade_str}{class_str}"
     
+    # 万が一結合した文字が空だった場合のフォールバック
     if not target_sheet_name.strip():
         target_sheet_name = "Results"
             
@@ -215,7 +216,7 @@ def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_rec
         try:
             sh = get_spreadsheet()
             
-            # 指定されたB列＋C列のワークシートが存在するか確認し、なければ作成する
+            # 指定された学年＋クラスのワークシートが存在するか確認し、なければ作成する
             try:
                 ws = sh.worksheet(target_sheet_name)
             except gspread.exceptions.WorksheetNotFound:
@@ -225,7 +226,7 @@ def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_rec
                 for i in range(1, 6):
                     header.extend([f"Q{i}文字起こし", f"Q{i}評価結果", f"Q{i}音声URL", f"Q{i}解答時間(秒)"])
                 ws.append_row(header)
-                time.sleep(1)
+                time.sleep(1) # API制限のためのウェイト
             
             ws.append_row(row_data)
             st.success(f"結果がシート「{target_sheet_name}」に保存されました。")
@@ -245,19 +246,18 @@ df_config_all = load_all_config()
 if not st.session_state.test_started:
     st.subheader("受験者情報を入力してください")
     
-    if not df_config_all.empty and 'Grade' in df_config_all.columns and 'Class' in df_config_all.columns:
+    if not df_config_all.empty and 'School' in df_config_all.columns:
         df_config_all = df_config_all.astype(str)
         try:
-            # Configシートの列構成（B列: Grade, C列: Class）に基づいてプルダウンの選択肢を取得
-            available_schools = sorted(list(df_config_all['School'].dropna().unique())) if 'School' in df_config_all.columns else ["〇〇中"]
+            available_schools = sorted(list(df_config_all['School'].dropna().unique()))
             available_grades = sorted(list(df_config_all['Grade'].dropna().unique()))
             available_classes = sorted(list(df_config_all['Class'].dropna().unique()))
         except Exception as e:
-            st.error(f"⚠️ 列の読み込みに失敗しました: {e}")
-            available_schools, available_grades, available_classes = ["〇〇中"], ["2"], ["B"]
+            st.error(f"⚠️ 列名（School, Grade, Class）が見つかりません: {e}")
+            available_schools, available_grades, available_classes = ["〇〇中"], ["1年"], ["1組"]
     else:
         st.warning("⚠️ スプレッドシートからデータを取得できませんでした。デフォルトの設定で表示しています。")
-        available_schools, available_grades, available_classes = ["〇〇中"], ["2"], ["B"]
+        available_schools, available_grades, available_classes = ["〇〇中"], ["1年"], ["1組"]
     
     school = st.selectbox("学校名", available_schools)
     grade = st.selectbox("学年", available_grades)
@@ -274,8 +274,7 @@ if not st.session_state.test_started:
             st.warning("入力内容を確認するか、Configシートを修正してください。")
         else:
             df_config_all = df_config_all.astype(str)
-            # B列(Grade)とC列(Class)の条件に合致する行をConfigから抽出
-            student_config = df_config_all[(df_config_all['Grade'] == str(grade)) & (df_config_all['Class'] == str(class_num))]
+            student_config = df_config_all[(df_config_all['School'] == str(school)) & (df_config_all['Grade'] == str(grade)) & (df_config_all['Class'] == str(class_num))]
             if student_config.empty:
                 st.error("入力されたクラス設定がConfigシートに見つかりません。")
             else:
