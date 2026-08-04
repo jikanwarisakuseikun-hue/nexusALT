@@ -1,948 +1,387 @@
 import streamlit as st
-
-import json
-
+import pandas as pd
+import datetime
+import io
 import time
-
-import sys
-
 import os
-
-from gtts import gTTS  # 🔊 音声再生の安定化のために導入
-
-import streamlit.components.v1 as components  # 🔄 自動再生カウント用のコンポーネント
-
-
-
-# 🌟 st_audiorec の読み込みパス問題を強制解決するロジック
-
-try:
-
-    import st_audiorec
-
-except ModuleNotFoundError:
-
-    for path in sys.path:
-
-        if "site-packages" in path:
-
-            potential_path = os.path.join(path, "st_audiorec")
-
-            if os.path.exists(potential_path) and potential_path not in sys.path:
-
-                sys.path.append(potential_path)
-
-    try:
-
-        from st_audiorec import st_audiorec
-
-    except ImportError:
-
-        st_audiorec = None
-
-
-
-from google.oauth2.service_account import Credentials
-
+import random
+import google.generativeai as genai  # Gemini用
+from gtts import gTTS
 from googleapiclient.discovery import build
-
-from googleapiclient.http import MediaInMemoryUpload
-
-import google.generativeai as genai
-
-
-
-# 📄 ページ設定とデザイン的適用
-
-st.set_page_config(
-
-    page_title="Nexus ALT - デジタル英語スピーキングテスト",
-
-    page_icon="🎙️",
-
-    layout="centered",
-
-    initial_sidebar_state="collapsed"
-
-)
-
-
-
-# 🎨 スタイリッシュなモダンデザインCSS
-
-st.markdown("""
-
-    <style>
-
-    .stApp {
-
-        background-color: #f8fafc;
-
-        color: #1e293b;
-
-        font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', sans-serif;
-
-    }
-
-    .main-header {
-
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-
-        padding: 24px;
-
-        border-radius: 16px;
-
-        color: white;
-
-        text-align: center;
-
-        margin-bottom: 24px;
-
-        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-
-    }
-
-    .main-header h1 {
-
-        color: white !important;
-
-        font-size: 24px !important;
-
-        font-weight: 700 !important;
-
-        margin: 0 !important;
-
-    }
-
-    .main-header p {
-
-        color: #94a3b8 !important;
-
-        font-size: 13px !important;
-
-        margin: 4px 0 0 0 !important;
-
-    }
-
-    .test-card {
-
-        background-color: white;
-
-        padding: 30px;
-
-        border-radius: 16px;
-
-        border: 1px solid #e2e8f0;
-
-        box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1);
-
-        margin-bottom: 20px;
-
-    }
-
-    .audio-box {
-
-        background-color: #f1f5f9;
-
-        border: 1px solid #cbd5e1;
-
-        padding: 20px;
-
-        border-radius: 12px;
-
-        text-align: center;
-
-        margin: 15px 0;
-
-    }
-
-    .result-box {
-
-        background-color: #f0fdf4;
-
-        border: 1px solid #bbf7d0;
-
-        padding: 20px;
-
-        border-radius: 12px;
-
-        text-align: center;
-
-        margin-bottom: 15px;
-
-    }
-
-    .footer {
-
-        position: fixed;
-
-        left: 0;
-
-        bottom: 0;
-
-        width: 100%;
-
-        background-color: #f1f5f9;
-
-        color: #64748b;
-
-        text-align: center;
-
-        padding: 8px 0;
-
-        font-size: 11px;
-
-        border-top: 1px solid #e2e8f0;
-
-        z-index: 100;
-
-    }
-
-    .main-content-padding {
-
-        margin-bottom: 60px;
-
-    }
-
-    </style>
-
-""", unsafe_allow_html=True)
-
-
-
-# 🔒 Secretsのパース
+from googleapiclient.http import MediaIoBaseUpload
+from google.oauth2 import service_account
+import gspread
+
+# --- 1. ページ基本設定 & セッション状態の初期化 ---
+st.set_page_config(page_title="Nexus English", page_icon="🌐", layout="centered")
+
+if "test_started" not in st.session_state:
+    st.session_state.test_started = False
+if "current_q_idx" not in st.session_state:
+    st.session_state.current_q_idx = 0
+if "student_info" not in st.session_state:
+    st.session_state.student_info = {}
+if "answers_cache" not in st.session_state:
+    st.session_state.answers_cache = {}
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
+if "time_records" not in st.session_state:
+    st.session_state.time_records = {}
+if "current_feedback" not in st.session_state:
+    st.session_state.current_feedback = None
+# 考える時間（シンキングタイム）のタイマー制御用
+if "timer_done" not in st.session_state:
+    st.session_state.timer_done = False
+if "last_timer_q_idx" not in st.session_state:
+    st.session_state.last_timer_q_idx = 0
+
+# Gemini APIの初期化
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+except Exception as e:
+    st.error(f"⚠️ Secretsの「GEMINI_API_KEY」の読み込みに失敗しました: {e}")
 
 try:
-
-    SPREADSHEET_ID = st.secrets["SPREADSHEET_ID"]
-
-    raw_json_text = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
-
-    service_account_info = json.loads(raw_json_text)
-
-    
-
-    if "private_key" in service_account_info:
-
-        service_account_info["private_key"] = service_account_info["private_key"].replace("\\n", "\n")
-
-        
-
+    GOOGLE_DRIVE_FOLDER_ID = st.secrets["GOOGLE_DRIVE_FOLDER_ID"]
 except Exception as e:
+    st.error(f"⚠️ Secretsの「GOOGLE_DRIVE_FOLDER_ID」の読み込みに失敗しました: {e}")
 
-    st.error(f"【設定エラー】Secretsの読み込みに失敗しました。 エラー詳細: {e}")
-
-    st.stop()
-
-
-
-# 🌐 Google APIの初期化
-
-creds = Credentials.from_service_account_info(
-
-    service_account_info, 
-
-    scopes=[
-
-        "https://www.googleapis.com/auth/spreadsheets",
-
-        "https://www.googleapis.com/auth/drive"
-
-    ]
-
-)
-
-sheets_service = build("sheets", "v4", credentials=creds)
-
-drive_service = build("drive", "v3", credentials=creds)
-
-
-
-# 💾 セッション状態の初期化
-
-if "step" not in st.session_state:
-
-    st.session_state.step = "init"
-
-if "current_q_idx" not in st.session_state:
-
-    st.session_state.current_q_idx = 0
-
-if "student_info" not in st.session_state:
-
-    st.session_state.student_info = {}
-
-if "recorded_audios" not in st.session_state:
-
-    st.session_state.recorded_audios = {}
-
-if "transcriptions" not in st.session_state:
-
-    st.session_state.transcriptions = {}  # 確定したテキストの保管庫
-
-if "listen_counts" not in st.session_state:
-
-    st.session_state.listen_counts = {}
-
-if "questions_data" not in st.session_state:
-
-    st.session_state.questions_data = None
-
-if "is_saved_successfully" not in st.session_state:
-
-    st.session_state.is_saved_successfully = False
-
-
-
-# 📥 スプレッドシートの「Questions」シートからデータを動的に読み取る
-
-if st.session_state.questions_data is None:
-
+# --- 2. スプレッドシート接続の初期化 ---
+@st.cache_resource
+def get_gspread_client():
     try:
-
-        result = sheets_service.spreadsheets().values().get(
-
-            spreadsheetId=SPREADSHEET_ID,
-
-            range="'Questions'!A3:CX3"
-
-        ).execute()
-
-        
-
-        row_values = result.get("values", [])[0]
-
-        st.session_state.class_name = row_values[0] if len(row_values) > 0 else "設定なし"
-
-        
-
-        dynamic_questions = []
-
-        q_id = 1
-
-        for i in range(1, len(row_values), 2):
-
-            q_text = row_values[i] if i < len(row_values) else ""
-
-            q_criterion = row_values[i+1] if (i+1) < len(row_values) else ""
-
-            
-
-            if q_text.strip():
-
-                dynamic_questions.append({
-
-                    "id": q_id,
-
-                    "text": q_text,
-
-                    "criterion": q_criterion
-
-                })
-
-                st.session_state.listen_counts[q_id] = 0
-
-                st.session_state.recorded_audios[q_id] = None
-
-                st.session_state.transcriptions[q_id] = ""
-
-                q_id += 1
-
-                
-
-        st.session_state.questions_data = dynamic_questions
-
-        
-
-        gemini_key = st.secrets["GEMINI_API_KEY"]
-
-        genai.configure(api_key=gemini_key)
-
-        
-
+        creds_info = st.secrets["connections"]["gsheets"]
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        creds = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
+        return gspread.authorize(creds)
     except Exception as e:
-
-        st.error(f"Questionsシートからのデータ動的読み込みに失敗しました。詳細: {e}")
-
+        st.error(f"⚠️ Googleサービスアカウントの認証に失敗しました。Secretsの設定を確認してください: {e}")
         st.stop()
 
-
-
-QUESTIONS = st.session_state.questions_data
-
-FOLDER_ID = st.secrets["FOLDER_ID"]
-
-TARGET_DRIVE_ID = "0ACP5Eu-XLix6Uk9PVA"
-
-
-
-# 🧠 その場で確実に文字起こしをする関数
-
-def transcribe_audio_now(audio_bytes):
-
-    if not audio_bytes or len(audio_bytes) < 100:
-
-        return "（エラー: 音声データが空、または録音に失敗しています）"
-
-
-
-    # モデル名エラー対策：旧モデル名と新モデル名両方を順にフォールバック
-
-    models_to_try = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
-
-    prompt = "Transcribe the following English audio precisely. Output ONLY the text. If silent or no speech, output 'No speech'."
-
-    
-
-    last_error = ""
-
-    for model_name in models_to_try:
-
-        try:
-
-            model = genai.GenerativeModel(model_name)
-
-            response = model.generate_content([
-
-                prompt,
-
-                {"mime_type": "audio/wav", "data": audio_bytes}
-
-            ])
-
-            if response.text and response.text.strip():
-
-                return response.text.strip()
-
-        except Exception as e:
-
-            last_error = str(e)
-
-            continue # 次のモデル名を試す
-
-            
-
-    return f"（APIエラー: {last_error}）"
-
-
-
-st.markdown('<div class="main-content-padding">', unsafe_allow_html=True)
-
-
-
-# --- 🖼️ 画面1: 受験者情報入力画面 ---
-
-if st.session_state.step == "init":
-
-    st.markdown('<div class="main-header"><h1>🎙️ Nexus ALT スピーキングテスト</h1><p>Digital Speaking Assessment System</p></div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="test-card">', unsafe_allow_html=True)
-
-    st.subheader("受験者情報の入力")
-
-    
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        cls = st.selectbox("クラス", [st.session_state.class_name])
-
-    with col2:
-
-        num = st.selectbox("名簿番号", [f"{i}番" for i in range(1, 46)])
-
-        
-
-    name = st.text_input("氏名（カタカナ）", placeholder="例: トウキョウ タロウ")
-
-    
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    if st.button("テストを開始する ➔", use_container_width=True, type="primary"):
-
-        if not name.strip():
-
-            st.error("⚠️ 氏名を入力してください。")
-
-        else:
-
-            st.session_state.student_info = {"class": cls, "number": num, "name": name.strip()}
-
-            st.session_state.step = "test"
-
-            st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-# --- 🖼️ 画面2: テスト本番画面 ---
-
-elif st.session_state.step == "test":
-
-    info = st.session_state.student_info
-
-    st.markdown(f'<div class="main-header"><h1>Question {st.session_state.current_q_idx + 1} / {len(QUESTIONS)}</h1><p>{info["class"]} {info["number"]} {info["name"]} 受験中</p></div>', unsafe_allow_html=True)
-
-    
-
-    q = QUESTIONS[st.session_state.current_q_idx]
-
-    st.markdown('<div class="test-card">', unsafe_allow_html=True)
-
-    
-
-    st.markdown('<div class="audio-box">', unsafe_allow_html=True)
-
-    
-
+def get_spreadsheet():
     try:
+        gc = get_gspread_client()
+        spreadsheet_url = st.secrets["spreadsheet"]
+        return gc.open_by_url(spreadsheet_url)
+    except Exception as e:
+        st.error(f"⚠️ スプレッドシートのオープンに失敗しました。URLまたはアクセス権限を確認してください: {e}")
+        st.stop()
 
-        if f"audio_bytes_{q['id']}" not in st.session_state:
+# --- 3. AI & 音声 連携関数 (リトライ機能搭載) ---
 
-            tts = gTTS(text=q['text'], lang='en', tld='com')
+def generate_ai_voice(text: str):
+    try:
+        tts = gTTS(text=text, lang='en', slow=False)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return fp.read()
+    except Exception as e:
+        st.error(f"AI音声の生成に失敗しました: {e}")
+        return None
 
-            import io
-
-            fp = io.BytesIO()
-
-            tts.write_to_fp(fp)
-
-            st.session_state[f"audio_bytes_{q['id']}"] = fp.getvalue()
-
-        
-
-        st.audio(st.session_state[f"audio_bytes_{q['id']}"], format="audio/mp3")
-
-        
-
-        # 🔄 【自動再生数カウント機能】
-
-        js_trigger = f"""
-
-        <script>
-
-        const playCountKey = 'played_q_{q['id']}_' + parent.window.location.href;
-
-        setTimeout(() => {{
-
-            const audios = parent.document.querySelectorAll('audio');
-
-            audios.forEach((audio) => {{
-
-                if(!audio.dataset.monitored) {{
-
-                    audio.dataset.monitored = "true";
-
-                    audio.addEventListener('play', () => {{
-
-                        const link = document.createElement('a');
-
-                        link.href = "?played_q={q['id']}&t=" + Date.now();
-
-                        window.parent.postMessage({{type: 'streamlit:setComponentValue', value: true}}, '*');
-
-                    }});
-
-                }}
-
-            }});
-
-        }}, 1000);
-
-        </script>
-
-        """
-
-        query_params = st.query_params
-
-        if "played_q" in query_params and query_params["played_q"] == str(q['id']):
-
-            last_ts_key = f"last_ts_{q['id']}"
-
-            current_ts = query_params.get("t", [""])[0]
-
-            if last_ts_key not in st.session_state or st.session_state[last_ts_key] != current_ts:
-
-                st.session_state.listen_counts[q['id']] += 1
-
-                st.session_state[last_ts_key] = current_ts
-
-        
-
-        components.html(js_trigger, height=0, width=0)
-
-        st.caption(f"🎧 質問音声の再生回数: {st.session_state.listen_counts[q['id']]} 回 (自動記録中)")
-
-            
-
-    except Exception as tts_err:
-
-        st.error("問題音声の生成に失敗しました。ページをリロードしてください。")
-
-        
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
+def analyze_and_evaluate_gemini_with_retry(audio_bytes, question_text: str, criteria: str, max_retries=5):
+    """【堅牢版】同時アクセスエラー（429等）を自動リトライで回避する評価関数"""
     
+    prompt_evaluation = f"""
+    あなたは中学校の英語教師です。
+    提示した質問・評価基準と、添付された生徒の録音音声（英語）を照らし合わせて、以下の2つのタスクを行ってください。
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    【先生が提示した質問】: {question_text}
+    【先生が提示した評価基準】: {criteria}
 
-    st.markdown("##### 🎙️ 回答を録音する")
+    【タスク1: 文字起こし】
+    生徒が何と言っているか、英語で正確に文字起こししてください。無音や英語として聞き取れない場合は 「No speech」 と出力してください。
 
+    【タスク2: 採点・評価】
+    評価基準に沿って、判定（A/B/Cのいずれか）と生徒への優しい日本語アドバイスを作成してください。
+
+    【出力フォーマット】
+    必ず以下のフォーマットを厳守して出力してください。これ以外の挨拶や解説は含めないでください。
+    ■文字起こし:
+    (ここに文字起こしした英文)
+    ■評価結果:
+    判定: (A / B / C のいずれか)
+    アドバイス: (生徒への優しい日本語のアドバイス)
+    """
+
+    audio_data = {
+        "mime_type": "audio/wav",
+        "data": io.BytesIO(audio_bytes).getvalue()
+    }
+
+    models_to_try = ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite", "gemini-3.1-flash-lite"]
     
-
-    wav_audio_data = None
-
-    if st_audiorec is not None:
-
-        try:
-
-            wav_audio_data = st_audiorec()
-
-        except Exception:
-
-            pass
-
-    
-
-    if wav_audio_data is None:
-
-        standard_audio = st.audio_input("マイク入力を許可して録音ボタンを押してください", key=f"audio_input_{q['id']}")
-
-        if standard_audio is not None:
-
-            wav_audio_data = standard_audio.read()
-
-    
-
-    if wav_audio_data is not None:
-
-        st.session_state.recorded_audios[q["id"]] = wav_audio_data
-
-        st.success("✅ この問題の録音が完了しました！")
-
-        
-
-    st.markdown("<br><br>", unsafe_allow_html=True)
-
-    
-
-    is_last = (st.session_state.current_q_idx == len(QUESTIONS) - 1)
-
-    btn_label = "🏁 すべての回答を送信する" if is_last else "次の問題へ ➡️"
-
-    
-
-    if st.button(btn_label, use_container_width=True, type="primary" if is_last else "secondary"):
-
-        if st.session_state.recorded_audios[q["id"]] is None:
-
-            st.warning("⚠️ 録音を行ってから次へ進んでください。")
-
-        else:
-
-            with st.spinner("AIが音声を解析中..."):
-
-                audio_bytes = st.session_state.recorded_audios[q["id"]]
-
-                result_text = transcribe_audio_now(audio_bytes)
-
-                st.session_state.transcriptions[q["id"]] = result_text
-
-
-
-            if is_last:
-
-                st.session_state.step = "finish"
-
-            else:
-
-                st.session_state.current_q_idx += 1
-
-            st.rerun()
-
-            
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-# --- 🖼️ 画面3: 送信・データ保存画面 ---
-
-elif st.session_state.step == "finish":
-
-    info = st.session_state.student_info
-
-    target_sheet_name = info["class"]
-
-    
-
-    if not st.session_state.is_saved_successfully:
-
-        st.markdown('<div class="main-header"><h1>🏁 テスト送信・保存中</h1><p>サーバーへデータを安全に記録しています</p></div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="test-card">', unsafe_allow_html=True)
-
-        
-
-        progress_bar = st.progress(0)
-
-        status_text = st.empty()
-
-        total_q = len(QUESTIONS)
-
-        
-
-        row_data = [info["class"], info["number"], info["name"]]
-
-        
-
-        for idx, q in enumerate(QUESTIONS):
-
-            status_text.markdown(f"**【音声保存中】 Question {idx+1} / {total_q} のファイルを転送中...**")
-
-            audio_bytes = st.session_state.recorded_audios[q["id"]]
-
-            
-
-            # Googleドライブへ音声ファイルを保存する処理
-
-            filename = f"{info['class']}_{info['number']}_{info['name']}_Q{q['id']}.wav"
-
-            media = MediaInMemoryUpload(audio_bytes, mimetype="audio/wav")
-
-            file_metadata = {
-
-                "name": filename, 
-
-                "parents": [TARGET_DRIVE_ID],
-
-                "driveId": TARGET_DRIVE_ID
-
-            }
-
-            
-
+    for attempt in range(max_retries):
+        last_error = ""
+        for model_name in models_to_try:
             try:
-
-                # 🛠️ 【修正点】「permissions.create」による外部共有設定を完全に排除。
-
-                # 組織ポリシー制限に引っかからないよう、単に共有ドライブ（TARGET_DRIVE_ID）にアップロードするだけに留めます。
-
-                drive_file = drive_service.files().create(
-
-                    body=file_metadata, 
-
-                    media_body=media, 
-
-                    fields="id, webViewLink",
-
-                    supportsAllDrives=True
-
-                ).execute()
-
-                audio_link = drive_file.get("webViewLink")
-
-            except Exception as drive_err:
-
-                st.error(f"❌ Googleドライブへの音声保存に失敗しました。詳細: {drive_err}")
-
-                st.stop()
-
-            
-
-            transcription = st.session_state.transcriptions.get(q["id"], "（解析データなし）")
-
-            score = "提出済"
-
-            advice_placeholder = "（正常に受付）"
-
-            
-
-            listen_count = st.session_state.listen_counts[q['id']]
-
-            row_data.extend([audio_link, transcription, score, advice_placeholder, f"{listen_count}回"])
-
-            progress_bar.progress(int((idx + 1) / total_q * 100))
-
-            
-
-        status_text.empty()
-
-        progress_bar.empty()
-
-        
-
-        # 📂 スプレッドシートへのクラス別書き込み処理
-
-        try:
-
-            spreadsheet_meta = sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-
-            existing_sheets = [sheet["properties"]["title"] for sheet in spreadsheet_meta.get("sheets", [])]
-
-            
-
-            if target_sheet_name not in existing_sheets:
-
-                add_sheet_request = {
-
-                    "requests": [{
-
-                        "addSheet": {
-
-                            "properties": {"title": target_sheet_name}
-
-                        }
-
-                    }]
-
-                }
-
-                sheets_service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body=add_sheet_request).execute()
-
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([audio_data, prompt_evaluation])
+                result_text = response.text
                 
-
-                headers = ["クラス", "名簿番号", "氏名"]
-
-                for q_num in range(1, total_q + 1):
-
-                    headers.extend([
-
-                        f"Q{q_num}音声リンク", 
-
-                        f"Q{q_num}文字起こし", 
-
-                        f"Q{q_num}評価", 
-
-                        f"Q{q_num}ステータス", 
-
-                        f"Q{q_num}再生数"
-
-                    ])
-
+                student_speech = "[文字起こしの抽出に失敗しました]"
+                eval_result = result_text
+                
+                if "■文字起こし:" in result_text and "■評価結果:" in result_text:
+                    parts = result_text.split("■評価結果:")
+                    eval_result = "■評価結果:" + parts[1]
+                    student_speech = parts[0].replace("■文字起こし:", "").strip()
                     
-
-                sheets_service.spreadsheets().values().update(
-
-                    spreadsheetId=SPREADSHEET_ID,
-
-                    range=f"'{target_sheet_name}'!A1",
-
-                    valueInputOption="USER_ENTERED",
-
-                    body={"values": [headers]}
-
-                ).execute()
-
-            
-
-            sheets_service.spreadsheets().values().append(
-
-                spreadsheetId=SPREADSHEET_ID,
-
-                range=f"'{target_sheet_name}'!A:A",
-
-                valueInputOption="USER_ENTERED",
-
-                body={"values": [row_data]}
-
-            ).execute()
-
-            
-
-            st.session_state.is_saved_successfully = True
-
-            st.balloons()
-
-            st.rerun()
-
-            
-
-        except Exception as sheet_err:
-
-            st.error(f"スプレッドシートへのデータ保存に失敗しました: {sheet_err}")
-
-            st.stop()
-
-
-
-    # 📥 保存完了後の画面表示
-
-    else:
-
-        st.markdown('<div class="main-header"><h1>🏁 テスト完了</h1><p>Nexus ALT Digital Speaking Test</p></div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="test-card">', unsafe_allow_html=True)
-
+                return student_speech, eval_result, f"🟢 Gemini ({model_name} で解析完了)"
+                
+            except Exception as e:
+                last_error = str(e)
+                if "429" in last_error or "Quota" in last_error or "limit" in last_error:
+                    time.sleep(1 + random.random())
+                continue
         
+        if attempt < max_retries - 1:
+            wait_time = (2 ** attempt) + random.uniform(0.5, 1.5)
+            time.sleep(wait_time)
+        else:
+            break
+            
+    return (
+        "[エラー] 混雑のためAIが応答しませんでした。", 
+        f"Geminiエラー: {last_error}\n時間を置いて再度送信をお試しください。", 
+        "🔴 解析失敗（制限オーバー）"
+    )
 
-        st.markdown(f"""
+def upload_to_drive_with_retry(audio_bytes, file_name, max_retries=5) -> str:
+    """【堅牢版】同時書き込み制限による403/503エラーをリトライで回避するアップロード関数"""
+    for attempt in range(max_retries):
+        try:
+            creds_info = st.secrets["connections"]["gsheets"]
+            scopes = ['https://www.googleapis.com/auth/drive']
+            creds = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
+            drive_service = build('drive', 'v3', credentials=creds)
+            
+            file_metadata = {'name': file_name, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
+            media = MediaIoBaseUpload(io.BytesIO(audio_bytes), mimetype='audio/wav', resumable=True)
+            
+            file = drive_service.files().create(
+                body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True
+            ).execute()
+            return file.get('webViewLink', '')
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1.5 + random.random() * 1.5)
+            else:
+                return f"Upload Failed: {e}"
 
-        <div class="result-box">
+# --- 4. スプレッドシート操作関数 ---
+@st.cache_data(ttl=60)
+def load_all_config():
+    try:
+        sh = get_spreadsheet()
+        data = sh.worksheet("Config").get_all_records()
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"⚠️ スプレッドシート「Config」シートのデータ取得に失敗しました。詳細エラー: {e}")
+        return pd.DataFrame()
 
-            <h3 style="color: #15803d; margin: 0;">✅ 保存しました</h3>
+def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_records: dict, num_questions: int, max_retries=5):
+    """【B列(Grade)＋C列(Class)でシート自動分割・保存版】"""
+    t_delta = datetime.timedelta(hours=9)
+    JST = datetime.timezone(t_delta, 'JST')
+    row_data = [
+        datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
+        str(student_info.get("school", "")),
+        str(student_info.get("grade", "")),
+        str(student_info.get("class_num", "")),
+        str(student_info.get("attend_num", "")),
+        str(student_info.get("name", "")),
+    ]
+    for i in range(1, 6):
+        if i <= num_questions:
+            row_data.append(str(answers.get(f"q{i}_speech", "")))
+            row_data.append(str(answers.get(f"q{i}_eval", "")))
+            row_data.append(str(answers.get(f"q{i}_audio_url", "")))
+            row_data.append(str(time_records.get(i, 0))) 
+        else:
+            row_data.extend(["", "", "", ""]) 
+            
+    # B列のGradeとC列のClassを結合してシート名にする（例: "2" + "B" = "2B"）
+    grade_str = str(student_info.get("grade", "")).strip()
+    class_str = str(student_info.get("class_num", "")).strip()
+    target_sheet_name = f"{grade_str}{class_str}"
+    
+    if not target_sheet_name.strip():
+        target_sheet_name = "Results"
+            
+    for attempt in range(max_retries):
+        try:
+            sh = get_spreadsheet()
+            
+            # 指定されたB列＋C列のワークシートが存在するか確認し、なければ作成する
+            try:
+                ws = sh.worksheet(target_sheet_name)
+            except gspread.exceptions.WorksheetNotFound:
+                # シートが無い場合は新規作成し、ヘッダー（1行目）を設定する
+                ws = sh.add_worksheet(title=target_sheet_name, rows="1000", cols="30")
+                header = ["タイムスタンプ", "学校名", "学年", "クラス", "出席番号", "氏名"]
+                for i in range(1, 6):
+                    header.extend([f"Q{i}文字起こし", f"Q{i}評価結果", f"Q{i}音声URL", f"Q{i}解答時間(秒)"])
+                ws.append_row(header)
+                time.sleep(1)
+            
+            ws.append_row(row_data)
+            st.success(f"結果がシート「{target_sheet_name}」に保存されました。")
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 + random.random() * 2)
+            else:
+                st.error(f"保存エラー: {e}。お手数ですがこの画面をスクリーンショット等で保存し、先生に伝えてください。")
+                return False
 
-            <p style="margin: 10px 0 0 0; color: #1e293b; font-size: 15px;">
+# --- 5. メイン処理 ---
+st.title("🌏 Nexus English")
 
-                <b>{info['class']} {info['number']} {info['name']} さん</b> の音声ファイルと文字起こしデータの保存がすべて正常に完了しました。
+df_config_all = load_all_config()
 
-            </p>
-
-        </div>
-
-        """, unsafe_allow_html=True)
-
-
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        if st.button("🔄 次の生徒の入力を開始", use_container_width=True, type="primary"):
-
-            st.session_state.step = "init"
-
-            st.session_state.current_q_idx = 0
-
-            st.session_state.recorded_audios = {}
-
-            st.session_state.transcriptions = {q['id']: "" for q in QUESTIONS}
-
-            st.session_state.listen_counts = {q['id']: 0 for q in QUESTIONS}
-
-            st.session_state.is_saved_successfully = False
-
-            for q in QUESTIONS:
-
-                if f"audio_bytes_{q['id']}" in st.session_state:
-
-                    del st.session_state[f"audio_bytes_{q['id']}"]
-
-            st.clear_checkpoint() if hasattr(st, "clear_checkpoint") else None
-
+if not st.session_state.test_started:
+    st.subheader("受験者情報を入力してください")
+    
+    if not df_config_all.empty and 'Grade' in df_config_all.columns and 'Class' in df_config_all.columns:
+        df_config_all = df_config_all.astype(str)
+        try:
+            # Configシートの列構成（B列: Grade, C列: Class）に基づいてプルダウンの選択肢を取得
+            available_schools = sorted(list(df_config_all['School'].dropna().unique())) if 'School' in df_config_all.columns else ["〇〇中"]
+            available_grades = sorted(list(df_config_all['Grade'].dropna().unique()))
+            available_classes = sorted(list(df_config_all['Class'].dropna().unique()))
+        except Exception as e:
+            st.error(f"⚠️ 列の読み込みに失敗しました: {e}")
+            available_schools, available_grades, available_classes = ["〇〇中"], ["2"], ["B"]
+    else:
+        st.warning("⚠️ スプレッドシートからデータを取得できませんでした。デフォルトの設定で表示しています。")
+        available_schools, available_grades, available_classes = ["〇〇中"], ["2"], ["B"]
+    
+    school = st.selectbox("学校名", available_schools)
+    grade = st.selectbox("学年", available_grades)
+    class_num = st.selectbox("クラス", available_classes)
+    attend_num = st.selectbox("出席番号", [i for i in range(1, 51)], index=0)
+    name = st.text_input("氏名（例：タロウ / ニックネーム）")
+    
+    if st.button("🔄 スプレッドシートからデータを再読込する"):
+        st.cache_data.clear()
+        st.rerun()
+    
+    if st.button("テストを始める", type="primary"):
+        if name.strip() == "" or df_config_all.empty:
+            st.warning("入力内容を確認するか、Configシートを修正してください。")
+        else:
+            df_config_all = df_config_all.astype(str)
+            # B列(Grade)とC列(Class)の条件に合致する行をConfigから抽出
+            student_config = df_config_all[(df_config_all['Grade'] == str(grade)) & (df_config_all['Class'] == str(class_num))]
+            if student_config.empty:
+                st.error("入力されたクラス設定がConfigシートに見つかりません。")
+            else:
+                st.session_state.student_info = {"school": school, "grade": grade, "class_num": class_num, "attend_num": attend_num, "name": name.strip(), "config": student_config.iloc[0].to_dict()}
+                st.session_state.test_started = True
+                st.session_state.current_q_idx = 1
+                st.session_state.answers_cache = {}
+                st.session_state.time_records = {1:0, 2:0, 3:0, 4:0, 5:0}
+                st.session_state.current_feedback = None
+                st.session_state.timer_done = False
+                st.session_state.last_timer_q_idx = 0
+                st.rerun()
+else:
+    student_config = st.session_state.student_info["config"]
+    num_questions = int(float(student_config.get("num_questions", 3)))
+    idx = st.session_state.current_q_idx
+    
+    if idx <= num_questions:
+        st.markdown(f"### 🚀 Question {idx} / {num_questions}")
+        q_text = student_config.get(f"q{idx}_text", "")
+        q_criteria = student_config.get(f"q{idx}_criteria", "")
+        
+        if st.session_state.start_time is None:
+            st.session_state.start_time = time.time()
+            
+        voice_key = f"ai_voice_{idx}"
+        if voice_key not in st.session_state:
+            st.session_state[voice_key] = generate_ai_voice(q_text)
+        
+        st.markdown("#### 🎧 1. AIの質問を聴いてください")
+        if st.session_state[voice_key]:
+            st.audio(st.session_state[voice_key], format="audio/mp3")
+        
+        st.markdown("---")
+        
+        # --- ⏳ シンキングタイム・カウントダウン機能 ---
+        if st.session_state.last_timer_q_idx != idx:
+            st.markdown("#### 🧠 2. 答える英語を考えてください（シンキングタイム）")
+            thinking_seconds = 5
+            
+            progress_bar = st.progress(0.0)
+            status_text = st.empty()
+            
+            for percent_complete in range(thinking_seconds):
+                time.sleep(1)
+                progress_bar.progress((percent_complete + 1) / thinking_seconds)
+                status_text.write(f"⏳ あと **{thinking_seconds - (percent_complete + 1)}** 秒考えてください...")
+            
+            status_text.write("✅ 考える時間が終了しました！録音を開始しましょう。")
+            st.session_state.timer_done = True
+            st.session_state.last_timer_q_idx = idx
+            time.sleep(0.5)
             st.rerun()
 
+        # タイマー完了後にのみ表示される「発話・録音エリア」
+        if st.session_state.timer_done:
+            st.markdown("#### 🗣️ 3. あなたの回答を録音してください")
             
+            if st.session_state.current_feedback is None:
+                audio_file = st.audio_input("ここを押して発話・録音", key=f"audio_{idx}")
+                
+                if st.button("回答を送信する", type="primary", key=f"submit_{idx}"):
+                    if audio_file is None:
+                        st.warning("音声が録音されていません。")
+                    else:
+                        st.session_state.time_records[idx] = int(time.time() - st.session_state.start_time)
+                        with st.spinner("AIがあなたの英語を分析中... 📝 (※混雑時は少し時間がかかる場合があります)"):
+                            audio_bytes = audio_file.read()
+                            info = st.session_state.student_info
+                            file_name = f"{info['grade']}{info['class_num']}_{info['attend_num']}番_{info['name']}_Q{idx}.wav"
+                            
+                            audio_url = upload_to_drive_with_retry(audio_bytes, file_name)
+                            student_speech, eval_result, system_status = analyze_and_evaluate_gemini_with_retry(audio_bytes, q_text, q_criteria)
+                            
+                            st.session_state.answers_cache[f"q{idx}_speech"] = str(student_speech)
+                            st.session_state.answers_cache[f"q{idx}_eval"] = str(eval_result)
+                            st.session_state.answers_cache[f"q{idx}_audio_url"] = str(audio_url)
+                            
+                            st.session_state.current_feedback = {"speech": student_speech, "eval": eval_result, "status": system_status}
+                        st.rerun()
+            
+            if st.session_state.current_feedback is not None:
+                st.success("🎯 回答の送信が完了しました！")
+                with st.container(border=True):
+                    st.markdown("#### 🗣️ あなたが話した英語（AIの文字起こし）")
+                    st.code(st.session_state.current_feedback["speech"], language="text")
+                    st.markdown("#### 📝 採点・アドバイス")
+                    st.info(st.session_state.current_feedback["eval"])
+                    st.caption(f"🔧 稼働システム情報: {st.session_state.current_feedback['status']}")
+                
+                if st.button("次の質問へ進む ➡️", type="primary", key=f"next_btn_{idx}"):
+                    st.session_state.current_feedback = None
+                    st.session_state.start_time = None 
+                    st.session_state.timer_done = False  # 次の問題のためにタイマーをリセット
+                    st.session_state.current_q_idx += 1
+                    st.rerun()
+    else:
+        st.balloons()
+        st.success("🎉 すべての質問が終了しました！")
+        if "data_saved" not in st.session_state:
+            with st.spinner("スプレッドシートへ最終データを保存中... ⏳"):
+                save_results_to_sheet_with_retry(st.session_state.student_info, st.session_state.answers_cache, st.session_state.time_records, num_questions)
+            st.session_state.data_saved = True
+        if st.button("最初の画面に戻る（次の生徒用）"):
+            for key in list(st.session_state.keys()): del st.session_state[key]
+            st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-# 📊 著作権表示
-
-st.markdown("""
-
-    <div class="footer">
-
-        © 2026 Nexus ALT. All Rights Reserved. Digital Speaking Assessment System.
-
-    </div>
-
-""", unsafe_allow_html=True)
-
+st.markdown("---")
+st.markdown("<div style='text-align: center; color: #888888; font-size: 0.8em;'>© 2026 Shogo Takeuchi. All Rights Reserved.</div>", unsafe_allow_html=True)
