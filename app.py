@@ -183,7 +183,7 @@ def load_all_config():
         return pd.DataFrame()
 
 def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_records: dict, num_questions: int, max_retries=5):
-    """【クラス別シート自動生成・保存対応版】同時書き込みをリトライで解決する保存関数"""
+    """【学年＋クラス別シート自動生成・保存対応版】同時書き込みをリトライで解決する保存関数"""
     t_delta = datetime.timedelta(hours=9)
     JST = datetime.timezone(t_delta, 'JST')
     row_data = [
@@ -203,14 +203,20 @@ def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_rec
         else:
             row_data.extend(["", "", "", ""]) 
             
-    # 生徒が選択したクラス名をシート名にする（例: "1組", "2組" など）
-    target_sheet_name = str(student_info.get("class_num", "Results"))
+    # 学年とクラスを結合してシート名にする（例: "2年" + "A組" = "2年A組"）
+    grade_str = str(student_info.get("grade", ""))
+    class_str = str(student_info.get("class_num", ""))
+    target_sheet_name = f"{grade_str}{class_str}"
+    
+    # 万が一結合した文字が空だった場合のフォールバック
+    if not target_sheet_name.strip():
+        target_sheet_name = "Results"
             
     for attempt in range(max_retries):
         try:
             sh = get_spreadsheet()
             
-            # 指定されたクラスのワークシートが存在するか確認し、なければ作成する
+            # 指定された学年＋クラスのワークシートが存在するか確認し、なければ作成する
             try:
                 ws = sh.worksheet(target_sheet_name)
             except gspread.exceptions.WorksheetNotFound:
@@ -220,7 +226,7 @@ def save_results_to_sheet_with_retry(student_info: dict, answers: dict, time_rec
                 for i in range(1, 6):
                     header.extend([f"Q{i}文字起こし", f"Q{i}評価結果", f"Q{i}音声URL", f"Q{i}解答時間(秒)"])
                 ws.append_row(header)
-                time.sleep(1) # API制限のための気休めウェイト
+                time.sleep(1) # API制限のためのウェイト
             
             ws.append_row(row_data)
             st.success(f"結果がシート「{target_sheet_name}」に保存されました。")
